@@ -33,9 +33,9 @@ jobs:
         run: |
           set -e
           mkdir -p out
-          
-          # Read packages, ignore comments and empty lines
-          PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt || true)
+
+          # Read packages from pkgs.txt, ignore comments and empty lines, convert newlines to spaces
+          PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt | tr '\n' ' ')
           echo "==> Packages to install:"
           echo "$PKGS"
 
@@ -44,18 +44,21 @@ jobs:
             --platform "${PLATFORM}" \
             -e PKGS="$PKGS" \
             alpine:"${ALPINE_TAG}" \
-            sh -c "
-              set -e
-              apk update --no-cache
-              if [ -n \"$PKGS\" ]; then
-                apk add --no-cache $PKGS
-              fi
-              # Clean unnecessary files
-              rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale
-              rm -rf /etc/ssh/ssh_host_* /etc/machine-id
-              rm -rf /tmp/* /var/tmp/* /run/* /var/run/*
-            "
+            sh
           )
+
+          # Run commands inside container using here-doc
+          docker start -ai "$CID" <<EOF
+            set -e
+            apk update --no-cache
+            if [ -n "\$PKGS" ]; then
+              apk add --no-cache \$PKGS
+            fi
+            # Clean unnecessary files
+            rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale
+            rm -rf /etc/ssh/ssh_host_* /etc/machine-id
+            rm -rf /tmp/* /var/tmp/* /run/* /var/run/*
+EOF
 
           # Export container filesystem
           docker export "$CID" | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"

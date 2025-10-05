@@ -40,7 +40,7 @@ jobs:
           echo "$PKGS"
 
           docker run --platform "$PLATFORM" -e PKGS="$PKGS" --name rootfs alpine:"${ALPINE_TAG}" sh -euxc "
-            apk update --no-cache
+            apk -U upgrade --no-cache
             if [ -n \"$PKGS\" ]; then
               apk add --no-cache $PKGS
             fi

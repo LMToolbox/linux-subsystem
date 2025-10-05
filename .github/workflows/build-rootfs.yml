@@ -50,7 +50,7 @@ jobs:
                 apk add --no-cache $PKGS
               fi
               rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale
-              rm -rf /etc/ssh/ssh_host_* /etc/machine-id /etc/resolv.conf
+              rm -rf /etc/ssh/ssh_host_* /etc/machine-id
               rm -rf /tmp/* /var/tmp/* /run/* /var/run/*
               mkdir -p /proc /sys /dev
             ')

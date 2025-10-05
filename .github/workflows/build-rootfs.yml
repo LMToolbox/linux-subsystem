@@ -39,7 +39,7 @@ jobs:
           echo "$PKGS"
 
           # create modified Alpine container
-          CID=$(docker run -d \
+          CID=$(docker run \
             --platform "${PLATFORM}" \
             -e PKGS="$PKGS" \
             alpine:"${ALPINE_TAG}" \

@@ -11,10 +11,13 @@ jobs:
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
             ndk-version: r27d
 
       - name: Build PRoot
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
             cd proot
             chmod +x ./get_src.sh ./build_talloc.sh ./build_proot.sh

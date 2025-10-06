@@ -26,7 +26,7 @@ for ARCH in arm arm64 x86 x86_64; do
 
 	# build unbundled
 	reset_env
-	export LDFLAGS="-L${STATIC_ROOT}/lib"
+	export LDFLAGS="-L${STATIC_ROOT}/lib -Wl,-z,max-page-size=16384"
 	export PROOT_UNBUNDLE_LOADER='../libexec/proot'
 
 	make distclean || true
@@ -37,7 +37,7 @@ for ARCH in arm arm64 x86 x86_64; do
 
 	# build statically
 	reset_env
-	export LDFLAGS="-L${STATIC_ROOT}/lib -static -ffunction-sections -fdata-sections -Wl,--gc-sections"
+	export LDFLAGS="-L${STATIC_ROOT}/lib -static -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,-z,max-page-size=16384"
 
 	make distclean || true
 	make V=1 "PREFIX=${INSTALL_ROOT}-static" install
@@ -48,7 +48,7 @@ for ARCH in arm arm64 x86 x86_64; do
 
 	# build .so for android apk
 	reset_env
-	export LDFLAGS="-L${STATIC_ROOT}/lib"
+	export LDFLAGS="-L${STATIC_ROOT}/lib -Wl,-z,max-page-size=16384"
 	export PROOT_UNBUNDLE_LOADER='.'
 	export PROOT_UNBUNDLE_LOADER_NAME='libproot-loader.so'
 	export PROOT_UNBUNDLE_LOADER_NAME_32='libproot-loader32.so'

@@ -1,1 +1,0 @@
-https://github.com/termux-play-store/termux-packages/releases/tag/proot-2025.10.04-r1

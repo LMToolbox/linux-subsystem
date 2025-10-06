@@ -1,0 +1,34 @@
+name: Build PRoot
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+            ndk-version: r27d
+
+      - name: Build PRoot
+        run: |
+            cd proot
+            chmod +x ./get_src.sh ./build_talloc.sh ./build_proot.sh
+            ./get_src.sh
+            ./build_talloc.sh
+            ./build_proot.sh
+
+      - name: Archive PRoot binaries
+        working-directory: proot/build
+        run: |
+          tar -c root-* | gzip > proot-android.tar.gz
+
+      - name: Upload PRoot
+        uses: actions/upload-artifact@v4
+        with:
+          name: proot-android
+          path: proot/build/proot-android.tar.gz

@@ -4,15 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       image_version:
-        description: "Image version (e.g., 25.10-1)"
+        description: "Image version"
         required: true
       alpine_version:
-        description: "Alpine version (e.g., 3.22.1)"
+        description: "Alpine version"
         required: true
-        default: "3.22.1"
+        default: "3.22.2"
 
 jobs:
   build:
+    name: Image ${{ inputs.image_version }} on Alpine ${{ inputs.alpine_version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:

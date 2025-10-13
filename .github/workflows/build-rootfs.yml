@@ -47,7 +47,7 @@ jobs:
           echo "==> Packages to install:"
           echo "$PKGS"
 
-          docker run --platform "$PLATFORM" -e PKGS="$PKGS" -e IMGV="$IMGV" --name rootfs alpine:"${ALPINE_TAG}" sh -euxc "
+          docker run --platform "$PLATFORM" -e PKGS="$PKGS" -e IMGV="$IMGV" --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
             apk -U upgrade --no-cache
             if [ -n \"$PKGS\" ]; then
               apk add --no-cache $PKGS

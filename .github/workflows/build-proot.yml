@@ -20,10 +20,10 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
             cd proot
-            chmod +x ./get_src.sh ./build_talloc.sh ./build_proot.sh
-            ./get_src.sh
-            ./build_talloc.sh
-            ./build_proot.sh
+            chmod +x ./get-src.sh ./build-talloc.sh ./build-proot.sh
+            ./get-src.sh
+            ./build-talloc.sh
+            ./build-proot.sh
 
       - name: Archive PRoot binaries
         working-directory: proot/build

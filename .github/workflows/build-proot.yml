@@ -113,8 +113,8 @@ jobs:
              This release contains static `proot` binaries and the corresponding loader libraries for Android.
              
              **Structure in tarball:**
-             - `arm/`
-             - `arm64/`
+             - `armeabi-v7a/`
+             - `arm64-v8a/`
              - `x86_64/`
              
              *Built using NDK r27d.*

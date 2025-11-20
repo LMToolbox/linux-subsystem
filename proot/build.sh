@@ -176,15 +176,21 @@ build_arch() {
     echo " -> Stripping binaries..."
     find "$INSTALL_ROOT/bin" -type f -exec "$STRIP" --strip-unneeded {} \; 2>/dev/null || true
 
-    # 5. Final Packaging
-    local FINAL_OUT="$OUT_DIR/$ARCH"
+    # 5. Final Packaging (Updated with ABI Renaming)
+    
+    # Map standard ARCH to Android ABI Directory names
+    local ABI_DIR="$ARCH"
+    if [ "$ARCH" == "arm64" ]; then ABI_DIR="arm64-v8a"; fi
+    if [ "$ARCH" == "arm" ]; then ABI_DIR="armeabi-v7a"; fi
+    
+    local FINAL_OUT="$OUT_DIR/$ABI_DIR"
     
     # Ensure output directory is clean before populating
     rm -rf "$FINAL_OUT"
     mkdir -p "$FINAL_OUT"
     
     # Copy Proot and rename to libproot.so
-    echo " -> Packaging artifacts..."
+    echo " -> Packaging artifacts into $ABI_DIR..."
     cp "$INSTALL_ROOT/bin/proot" "$FINAL_OUT/libproot.so"
     
     # Download and Copy Loaders (renames to libproot-loader.so / libproot-loader32.so)

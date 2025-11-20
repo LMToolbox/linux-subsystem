@@ -30,7 +30,7 @@ jobs:
       version: ${{ steps.calc_ver.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set Environment
         run: |
@@ -189,7 +189,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Upload Artifacts & State
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-data-${{ matrix.arch }}
           path: |
@@ -201,7 +201,7 @@ jobs:
           mkdir -p state
           echo "${{ steps.compare.outputs.changed }}" > state/${{ matrix.arch }}.changed
           echo "${{ steps.compare.outputs.changelog }}" > state/${{ matrix.arch }}.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: state-${{ matrix.arch }}
           path: state/*
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download State
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: state-*
           path: states
@@ -235,7 +235,7 @@ jobs:
 
       - name: Download Build Artifacts
         if: steps.check.outputs.needed == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: build-data-*
           path: raw_assets

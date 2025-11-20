@@ -1,37 +1,127 @@
 name: Build PRoot
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Manual rebuild trigger"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # Required to read tags and create Releases
 
 jobs:
-  build:
+  # ------------------------------------------------------------------
+  # JOB 1: Calculate Version ID
+  # ------------------------------------------------------------------
+  prepare:
     runs-on: ubuntu-latest
-
+    outputs:
+      version: ${{ steps.calc_ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # Fetch all history for tags
+
+      - name: Calculate Next Version
+        id: calc_ver
+        run: |
+          # Format: proot-YY.MM.DD
+          DATE_STR=$(date +'%y.%m.%d')
+          BASE_TAG="proot-${DATE_STR}"
+          NEW_TAG="$BASE_TAG"
+          
+          # Get existing tags to handle collisions (same day builds)
+          echo "Checking tags for prefix $BASE_TAG..."
+          EXISTING_TAGS=$(git tag -l "${BASE_TAG}*")
+          
+          if [[ "$EXISTING_TAGS" == *"$BASE_TAG"* ]]; then
+             # If version exists, loop through suffixes a-z
+             for suffix in a b c d e f g; do
+               if [[ "$EXISTING_TAGS" != *"${BASE_TAG}${suffix}"* ]]; then
+                 NEW_TAG="${BASE_TAG}${suffix}"
+                 break
+               fi
+             done
+          fi
+          
+          echo "Computed Version: $NEW_TAG"
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
+
+  # ------------------------------------------------------------------
+  # JOB 2: Build
+  # ------------------------------------------------------------------
+  build:
+    name: Build All Archs
+    needs: prepare
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-            ndk-version: r27d
+          ndk-version: r27d
 
       - name: Build PRoot
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-            cd proot
-            chmod +x ./get-src.sh ./build-talloc.sh ./build-proot.sh
-            ./get-src.sh
-            ./build-talloc.sh
-            ./build-proot.sh
+          cd proot
+          
+          # Make our new consolidated scripts executable
+          chmod +x build.sh config.sh ndk-setup.sh
+          
+          # Run the main build orchestrator
+          ./build.sh
 
-      - name: Archive PRoot binaries
-        working-directory: proot/build
+      - name: Archive Binaries
+        working-directory: proot
         run: |
-          tar -c root-* | gzip > proot-android.tar.gz
+          # Compress the 'out' directory contents (arm, arm64, etc.) into a tarball
+          # -C out . means "change to out directory and archive everything in ."
+          tar -czf proot-android.tar.gz -C out .
 
-      - name: Upload PRoot
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v5
         with:
-          name: proot-android
-          path: proot/build/proot-android.tar.gz
+          name: proot-android-build
+          path: proot/proot-android.tar.gz
+
+  # ------------------------------------------------------------------
+  # JOB 3: Release
+  # ------------------------------------------------------------------
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: proot-android-build
+          path: release_assets
+
+      - name: Push Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: PRoot Android ${{ needs.prepare.outputs.version }}
+          body: |
+             ## Automated Build ${{ needs.prepare.outputs.version }}
+             
+             ### Contents
+             This release contains static `proot` binaries and the corresponding loader libraries for Android.
+             
+             **Structure in tarball:**
+             - `arm/`
+             - `arm64/`
+             - `x86_64/`
+             
+             *Built using NDK r27d.*
+          files: release_assets/proot-android.tar.gz
+          make_latest: true

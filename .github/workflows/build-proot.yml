@@ -2,11 +2,6 @@ name: Build PRoot
 
 on:
   workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: "Manual rebuild trigger"
-        type: boolean
-        default: true
 
 permissions:
   contents: write # Required to read tags and create Releases

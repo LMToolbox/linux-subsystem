@@ -73,41 +73,38 @@ download_loader() {
     local TAG="${LOADER_TAG%%::*}"
     local VER="${LOADER_TAG##*::}"
 
-    # --- 1. Download Main Loader ---
+    # --- Normalize Architecture Name ---
+    # GitHub releases usually use 'aarch64' instead of 'arm64'
     local LOADER_ARCH="$ARCH"
-    # Map standard arch to loader filename convention if needed
     if [ "$ARCH" == "arm64" ]; then LOADER_ARCH="aarch64"; fi
-    # x86, x86_64, arm usually match directly
 
+    # --- 1. Download Main Loader ---
     local ASSET_NAME="libproot-loader-${LOADER_ARCH}-${VER}.so"
     local URL="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME}"
 
     echo " -> Downloading Main Loader ($LOADER_ARCH)..."
-    # We rename the downloaded asset to a generic 'libproot-loader.so'
     curl -L -f -o "${DEST_DIR}/libproot-loader.so" "$URL" || {
         echo "Error: Failed to download loader from $URL"
         exit 1
     }
     
-    # --- 2. Download 32-bit Loader (for 64-bit archs) ---
-    # This fetches the actual 32-bit binary required for emulation on 64-bit systems
-    local LOADER32_ARCH=""
-    if [ "$ARCH" == "arm64" ]; then
-        LOADER32_ARCH="arm"
-    elif [ "$ARCH" == "x86_64" ]; then
-        LOADER32_ARCH="x86"
-    fi
-
-    if [ -n "$LOADER32_ARCH" ]; then
-        local ASSET_NAME_32="libproot-loader-${LOADER32_ARCH}-${VER}.so"
+    # --- 2. Download 32-bit Loader (Only for 64-bit archs) ---
+    # For x86_64 and arm64, we need the specific 'loader32' file 
+    # matching the HOST architecture, not the target 32-bit architecture.
+    
+    if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "x86_64" ]; then
+        local ASSET_NAME_32="libproot-loader32-${LOADER_ARCH}-${VER}.so"
         local URL_32="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME_32}"
 
-        echo " -> Downloading 32-bit Loader ($LOADER32_ARCH)..."
-        # We rename the downloaded asset to 'libproot-loader32.so'
+        echo " -> Downloading 32-bit Loader (loader32 for $LOADER_ARCH)..."
+        
+        # We rename the downloaded asset to 'libproot-loader32.so' so Proot detects it
         curl -L -f -o "${DEST_DIR}/libproot-loader32.so" "$URL_32" || {
              echo "Error: Failed to download 32-bit loader from $URL_32"
              exit 1
         }
+    else
+        echo " -> Skipping 32-bit loader (not required for $ARCH)"
     fi
 }
 

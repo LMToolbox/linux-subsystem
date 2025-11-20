@@ -1,21 +1,31 @@
-name: Build (Alpine) rootfs
+name: Build Alpine Rootfs
 
 on:
+  schedule:
+    - cron: '0 2 * * *' # Run daily at 2am
   workflow_dispatch:
     inputs:
-      image_version:
-        description: "Image version"
-        required: true
       alpine_version:
         description: "Alpine version"
-        required: true
+        required: false
         default: "3.22.2"
+      force_release:
+        description: "Force release even if no changes?"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # Required to create Releases
+
+env:
+  DEFAULT_ALPINE_VERSION: "3.22.2"
 
 jobs:
   build:
-    name: ${{ matrix.arch }} | Image ${{ inputs.image_version }} on Alpine ${{ inputs.alpine_version }}
+    name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86_64
@@ -29,40 +39,240 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up QEMU for cross-arch Docker
+      - name: Set Alpine Version
+        run: |
+          if [ -n "${{ inputs.alpine_version }}" ]; then
+            echo "ALPINE_VERSION=${{ inputs.alpine_version }}" >> $GITHUB_ENV
+          else
+            echo "ALPINE_VERSION=${{ env.DEFAULT_ALPINE_VERSION }}" >> $GITHUB_ENV
+          fi
+
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Build Alpine rootfs for ${{ matrix.arch }}
+      - name: Fetch Previous Manifest
+        id: prev_manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Try to download the manifest file from the latest release to compare
+          echo "Fetching latest release info..."
+          
+          # Get latest release tag
+          LATEST_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName' || echo "")
+          
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No previous release found."
+            echo "has_prev=false" >> $GITHUB_OUTPUT
+          else
+            echo "Downloading manifest from $LATEST_TAG for $ARCH..."
+            if gh release download "$LATEST_TAG" -p "manifest-${ARCH}.txt" -O prev-manifest.txt; then
+              echo "has_prev=true" >> $GITHUB_OUTPUT
+            else
+              echo "Manifest not found in previous release."
+              echo "has_prev=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Build and Generate Manifest
+        id: build
         env:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
-          ALPINE_VERSION: ${{ inputs.alpine_version }}
-          IMGV: ${{ inputs.image_version }}
         run: |
-          set -e
           mkdir -p out
+          
+          # 1. Read Packages
+          if [ -f pkgs.txt ]; then
+            PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt | tr '\n' ' ')
+          else
+            PKGS=""
+          fi
+          
+          echo "Packages: $PKGS"
 
-          # Read packages from pkgs.txt, ignore comments and empty lines, convert newlines to spaces
-          PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt | tr '\n' ' ')
-          echo "==> Packages to install:"
-          echo "$PKGS"
-
-          docker run --platform "$PLATFORM" -e PKGS="$PKGS" -e IMGV="$IMGV" --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
+          # 2. Build Container & Extract Rootfs
+          # We map /out to extract the version list cleanly
+          docker run --platform "$PLATFORM" \
+            -e PKGS="$PKGS" \
+            -v $(pwd)/out:/out \
+            --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
+            
             apk -U upgrade --no-cache
             if [ -n \"$PKGS\" ]; then
               apk add --no-cache $PKGS
             fi
+            
+            # Generate current manifest (Package Name + Version)
+            apk info -v | sort > /out/manifest-${ARCH}.txt
+            
+            # Cleanup
             rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale
             rm -rf /etc/ssh/ssh_host_* /etc/machine-id
             rm -rf /tmp/* /var/tmp/* /run/* /var/run/*
             mkdir -p /proc /sys /dev
-
-            echo \"$IMGV\" > /version.txt
           "
-          docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}-${IMGV}.tar.gz"
+          
+          # Export rootfs
+          docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
 
-      - name: Upload rootfs
+      - name: Compare and Generate Changelog
+        id: compare
+        env:
+          ARCH: ${{ matrix.arch }}
+          HAS_PREV: ${{ steps.prev_manifest.outputs.has_prev }}
+        run: |
+          echo "Checking for changes..."
+          CHANGED="false"
+          CHANGELOG=""
+
+          if [ "$HAS_PREV" == "false" ]; then
+            CHANGED="true"
+            CHANGELOG="First release or no previous manifest found. Full build."
+          else
+            # Compare old and new manifests
+            # comm -3 suppresses lines that appear in both files (showing only diffs)
+            DIFF=$(comm -3 prev-manifest.txt out/manifest-${ARCH}.txt)
+            
+            if [ -n "$DIFF" ]; then
+              CHANGED="true"
+              
+              # Format the diff into a markdown table
+              CHANGELOG+="### Changes for ${ARCH}"$'\n'
+              CHANGELOG+="| Status | Package |"$'\n'
+              CHANGELOG+="| :--- | :--- |"$'\n'
+              
+              # Process diff lines
+              while IFS= read -r line; do
+                # Trim whitespace
+                clean_line=$(echo "$line" | xargs)
+                if [[ "$line" == $'\t'* ]]; then
+                  # Indented line (in file 2, new manifest) -> Added/Updated
+                  CHANGELOG+="| 🟢 New/Up | \`$clean_line\` |"$'\n'
+                else
+                  # Non-indented (in file 1, old manifest) -> Removed/Old
+                  CHANGELOG+="| 🔴 Old/Rm | \`$clean_line\` |"$'\n'
+                fi
+              done <<< "$DIFF"
+            fi
+          fi
+
+          # Force release override
+          if [ "${{ inputs.force_release }}" == "true" ]; then
+             CHANGED="true"
+             CHANGELOG+=" (Forced Release)"
+          fi
+
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+          
+          # Multiline output for changelog
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: artifacts-${{ matrix.arch }}
+          path: |
+            out/alpine-rootfs-${{ matrix.arch }}.tar.gz
+            out/manifest-${{ matrix.arch }}.txt
+
+      - name: Save State
+        run: |
+          mkdir -p build_state
+          echo "${{ steps.compare.outputs.changed }}" > build_state/${{ matrix.arch }}.changed
+          echo "${{ steps.compare.outputs.changelog }}" > build_state/${{ matrix.arch }}.log
+          
+      - name: Upload State
         uses: actions/upload-artifact@v4
         with:
-          name: alpine-rootfs-${{ matrix.arch }}-${{ inputs.image_version }}
-          path: out/alpine-rootfs-${{ matrix.arch }}-${{ inputs.image_version }}.tar.gz
+          name: state-${{ matrix.arch }}
+          path: build_state/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Analyze State and Prepare Release
+        id: prep
+        run: |
+          RELEASE_NEEDED="false"
+          FULL_CHANGELOG=""
+          
+          # Iterate over architectures to check if any reported a change
+          for arch in x86_64 aarch64 arm; do
+            # Check if changed file contains "true"
+            if grep -q "true" artifacts/state-$arch/$arch.changed; then
+              RELEASE_NEEDED="true"
+            fi
+            
+            # Append changelogs
+            if [ -f artifacts/state-$arch/$arch.log ]; then
+               LOG_CONTENT=$(cat artifacts/state-$arch/$arch.log)
+               if [ -n "$LOG_CONTENT" ]; then
+                 FULL_CHANGELOG+="$LOG_CONTENT"$'\n\n'
+               fi
+            fi
+          done
+
+          echo "release_needed=$RELEASE_NEEDED" >> $GITHUB_OUTPUT
+          
+          # Generate Version: YY.MM.DD
+          BASE_VER=$(date +'%y.%m.%d')
+          TAG="$BASE_VER"
+          
+          # Check if tag exists, append suffix if needed (a, b, c...)
+          # We fetch tags starting with today's date
+          EXISTING_TAGS=$(git tag -l "${BASE_VER}*")
+          
+          if [[ "$EXISTING_TAGS" == *"$BASE_VER"* ]]; then
+             # Logic to find next suffix
+             # Simple approach: check a, b, c manually or loop
+             for suffix in a b c d e f; do
+               if [[ "$EXISTING_TAGS" != *"${BASE_VER}${suffix}"* ]]; then
+                 TAG="${BASE_VER}${suffix}"
+                 break
+               fi
+             done
+          fi
+          
+          echo "new_tag=$TAG" >> $GITHUB_OUTPUT
+          
+          {
+            echo "changelog<<EOF"
+            echo "## Updates in $TAG"
+            echo "Base Alpine: ${{ env.DEFAULT_ALPINE_VERSION }}"
+            echo ""
+            echo "$FULL_CHANGELOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Move Artifacts for Release
+        if: steps.prep.outputs.release_needed == 'true'
+        run: |
+          mkdir release_assets
+          find artifacts -name "*.tar.gz" -exec cp {} release_assets/ \;
+          find artifacts -name "manifest-*.txt" -exec cp {} release_assets/ \;
+
+      - name: Push Release
+        if: steps.prep.outputs.release_needed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.new_tag }}
+          name: Release ${{ steps.prep.outputs.new_tag }}
+          body: ${{ steps.prep.outputs.changelog }}
+          files: release_assets/*
+          make_latest: true

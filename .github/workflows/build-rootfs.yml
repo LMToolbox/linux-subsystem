@@ -32,21 +32,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history for tags
+          fetch-depth: 0
 
       - name: Calculate Next Version
         id: calc_ver
         run: |
-          # Base Format: YY.MM.DD
           BASE_VER=$(date +'%y.%m.%d')
           NEW_TAG="$BASE_VER"
           
-          # Get existing tags to handle collisions (same day builds)
-          echo "Checking tags for prefix $BASE_VER..."
+          # Note: This naturally ignores "proot-" tags because they don't start with the date (BASE_VER)
           EXISTING_TAGS=$(git tag -l "${BASE_VER}*")
           
           if [[ "$EXISTING_TAGS" == *"$BASE_VER"* ]]; then
-             # If version exists, loop through suffixes a-z
              for suffix in a b c d e f g; do
                if [[ "$EXISTING_TAGS" != *"${BASE_VER}${suffix}"* ]]; then
                  NEW_TAG="${BASE_VER}${suffix}"
@@ -55,7 +52,6 @@ jobs:
              done
           fi
           
-          echo "Computed Version: $NEW_TAG"
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
   # ------------------------------------------------------------------
@@ -91,18 +87,35 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # --- Fetch Previous Manifest for Comparison ---
+      # --- Fetch Previous Manifest (Filtered) ---
       - name: Fetch Previous Manifest
         id: prev_manifest
         env:
           GH_TOKEN: ${{ github.token }}
           ARCH: ${{ matrix.arch }}
         run: |
-          LATEST_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName' || echo "")
-          if [ -n "$LATEST_TAG" ] && gh release download "$LATEST_TAG" -p "manifest-${ARCH}.txt" -O prev-manifest.txt; then
-            echo "has_prev=true" >> $GITHUB_OUTPUT
+          # Logic Update:
+          # 1. List the last 10 releases (to look past any recent proot- releases)
+          # 2. Use jq to select tags that do NOT start with "proot-"
+          # 3. Take the top one (head -n 1)
+          
+          LATEST_TAG=$(gh release list --limit 10 --exclude-drafts --exclude-pre-releases --json tagName \
+            --jq '.[] | select(.tagName | startswith("proot-") | not) | .tagName' | head -n 1 || echo "")
+          
+          echo "has_prev=false" >> $GITHUB_OUTPUT
+          
+          if [ -n "$LATEST_TAG" ]; then
+             echo "Found latest relevant release: $LATEST_TAG"
+             
+             # Download ONLY the tiny manifest file
+             if gh release download "$LATEST_TAG" -p "manifest-${ARCH}.txt" -O prev-manifest.txt; then
+                 echo "Found previous manifest."
+                 echo "has_prev=true" >> $GITHUB_OUTPUT
+             else
+                 echo "Warning: Release $LATEST_TAG found, but no manifest for $ARCH."
+             fi
           else
-            echo "has_prev=false" >> $GITHUB_OUTPUT
+             echo "No relevant previous releases found."
           fi
 
       # --- Build Rootfs ---
@@ -110,7 +123,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
-          IMAGE_VERSION: ${{ needs.prepare.outputs.version }} # Injected from Job 1
+          IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mkdir -p out
           PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt | tr '\n' ' ' || echo "")
@@ -120,21 +133,20 @@ jobs:
             -v $(pwd)/out:/out \
             --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
             
-            # 1. Install Packages
             apk -U upgrade --no-cache
             if [ -n \"$PKGS\" ]; then apk add --no-cache $PKGS; fi
             
-            # 2. INJECT VERSION FILE
-            # This is the critical step you asked for:
             echo \"$IMAGE_VERSION\" > /etc/image-version
             chmod 644 /etc/image-version
             
-            # 3. Generate Manifest & Cleanup
+            # Generate manifest
             apk info -v | sort > /out/manifest-${ARCH}.txt
+            
             rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale /tmp/*
             mkdir -p /proc /sys /dev
           "
           
+          # Export raw rootfs
           docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
 
       # --- Compare Logic ---
@@ -195,7 +207,7 @@ jobs:
           path: state/*
 
   # ------------------------------------------------------------------
-  # JOB 3: Release (Only if changed)
+  # JOB 3: Release
   # ------------------------------------------------------------------
   release:
     needs: [prepare, build]
@@ -211,11 +223,8 @@ jobs:
       - name: Check if Release Needed
         id: check
         run: |
-          # Check if any architecture reported changes
           if grep -q "true" states/*.changed; then
             echo "needed=true" >> $GITHUB_OUTPUT
-            
-            # Combine changelogs
             echo "full_log<<EOF" >> $GITHUB_OUTPUT
             cat states/*.log >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
@@ -229,8 +238,38 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: build-data-*
-          path: release_assets
+          path: raw_assets
           merge-multiple: true
+
+      - name: Package Artifacts
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          mkdir -p final_package
+          
+          # Function to move and rename assets
+          package_arch() {
+            local SRC_ARCH=$1
+            local DEST_DIR=$2
+            
+            mkdir -p "final_package/$DEST_DIR"
+            
+            # Move and Rename Rootfs
+            if [ -f "raw_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" ]; then
+              mv "raw_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" \
+                 "final_package/$DEST_DIR/libalpine-rootfs.tar.gz.so"
+            fi
+          }
+
+          # Map build artifacts to Android ABI folder names
+          package_arch "x86_64"  "x86_64"
+          package_arch "aarch64" "arm64-v8a"
+          package_arch "arm"     "armeabi-v7a"
+
+          echo "==> Creating Master Archive..."
+          tar -czf alpine-rootfs.tar.gz -C final_package .
+          
+          ls -R final_package
+          ls -lh alpine-rootfs.tar.gz
 
       - name: Push Release
         if: steps.check.outputs.needed == 'true'
@@ -239,9 +278,11 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.version }}
           name: Release ${{ needs.prepare.outputs.version }}
           body: |
-             ## Automated Build ${{ needs.prepare.outputs.version }}
-             Base Alpine: ${{ env.DEFAULT_ALPINE_VERSION }}
-             
-             ${{ steps.check.outputs.full_log }}
-          files: release_assets/*
+              ## Automated Build ${{ needs.prepare.outputs.version }}
+              Base Alpine: ${{ env.DEFAULT_ALPINE_VERSION }}
+              
+              ${{ steps.check.outputs.full_log }}
+          files: |
+            alpine-rootfs.tar.gz
+            raw_assets/manifest-*.txt
           make_latest: true

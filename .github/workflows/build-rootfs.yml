@@ -15,7 +15,7 @@ on:
         default: false
 
 permissions:
-  contents: write # Required to read tags and create Releases
+  contents: write
 
 env:
   DEFAULT_ALPINE_VERSION: "3.22.2"
@@ -30,7 +30,7 @@ jobs:
       version: ${{ steps.calc_ver.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -39,8 +39,6 @@ jobs:
         run: |
           BASE_VER=$(date +'%y.%m.%d')
           NEW_TAG="$BASE_VER"
-          
-          # Note: This naturally ignores "proot-" tags because they don't start with the date (BASE_VER)
           EXISTING_TAGS=$(git tag -l "${BASE_VER}*")
           
           if [[ "$EXISTING_TAGS" == *"$BASE_VER"* ]]; then
@@ -51,7 +49,6 @@ jobs:
                fi
              done
           fi
-          
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
   # ------------------------------------------------------------------
@@ -74,7 +71,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set Environment
         run: |
@@ -87,18 +84,13 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # --- Fetch Previous Manifest (Filtered) ---
-      - name: Fetch Previous Manifest
+      # --- Fetch Previous Manifests ---
+      - name: Fetch Previous Manifests
         id: prev_manifest
         env:
           GH_TOKEN: ${{ github.token }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # Logic Update:
-          # 1. List the last 10 releases (to look past any recent proot- releases)
-          # 2. Use jq to select tags that do NOT start with "proot-"
-          # 3. Take the top one (head -n 1)
-          
           LATEST_TAG=$(gh release list --limit 10 --exclude-drafts --exclude-pre-releases --json tagName \
             --jq '.[] | select(.tagName | startswith("proot-") | not) | .tagName' | head -n 1 || echo "")
           
@@ -106,16 +98,33 @@ jobs:
           
           if [ -n "$LATEST_TAG" ]; then
              echo "Found latest relevant release: $LATEST_TAG"
-             
-             # Download ONLY the tiny manifest file
-             if gh release download "$LATEST_TAG" -p "manifest-${ARCH}.txt" -O prev-manifest.txt; then
-                 echo "Found previous manifest."
-                 echo "has_prev=true" >> $GITHUB_OUTPUT
+             FOUND_ANY="false"
+
+             # 1. Try fetch APK manifest (new naming)
+             if gh release download "$LATEST_TAG" -p "manifest-apk-${ARCH}.txt" -O prev-manifest-apk.txt; then
+                 echo "Found prev-manifest-apk."
+                 FOUND_ANY="true"
+             # Fallback: Try fetch old naming convention (migration path)
+             elif gh release download "$LATEST_TAG" -p "manifest-${ARCH}.txt" -O prev-manifest-apk.txt; then
+                 echo "Found legacy manifest, using as apk manifest."
+                 FOUND_ANY="true"
              else
-                 echo "Warning: Release $LATEST_TAG found, but no manifest for $ARCH."
+                 touch prev-manifest-apk.txt # Create empty if missing to avoid diff errors
+             fi
+
+             # 2. Try fetch PIP manifest
+             if gh release download "$LATEST_TAG" -p "manifest-pip-${ARCH}.txt" -O prev-manifest-pip.txt; then
+                 echo "Found prev-manifest-pip."
+             else
+                 touch prev-manifest-pip.txt
+             fi
+
+             if [ "$FOUND_ANY" == "true" ]; then
+                echo "has_prev=true" >> $GITHUB_OUTPUT
              fi
           else
              echo "No relevant previous releases found."
+             touch prev-manifest-apk.txt prev-manifest-pip.txt
           fi
 
       # --- Build Rootfs ---
@@ -126,27 +135,59 @@ jobs:
           IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mkdir -p out
-          PKGS=$(grep -Ev '^\s*#|^\s*$' pkgs.txt | tr '\n' ' ' || echo "")
           
+          if [ -f config.yaml ]; then
+            APK_PKGS=$(yq -r '.apk[] // ""' config.yaml | tr '\n' ' ')
+            PIP_PKGS=$(yq -r '.pip[] // ""' config.yaml | tr '\n' ' ')
+          else
+            echo "No config.yaml found!"
+            exit 1
+          fi
+
           docker run --platform "$PLATFORM" \
-            -e PKGS="$PKGS" \
+            -e APK_PKGS="$APK_PKGS" \
+            -e PIP_PKGS="$PIP_PKGS" \
             -v $(pwd)/out:/out \
             --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
             
             apk -U upgrade --no-cache
-            if [ -n \"$PKGS\" ]; then apk add --no-cache $PKGS; fi
+            
+            # 1. Install User Runtime APK Packages (Must include python3)
+            if [ -n \"\$APK_PKGS\" ]; then 
+              apk add --no-cache \$APK_PKGS
+            fi
+            
+            # 2. Handle PIP Packages
+            if [ -n \"\$PIP_PKGS\" ]; then
+              # A. Install Build Dependencies (Virtual Group)
+              # We add py3-pip and python3-dev. 
+              # If your pip packages need compiling (like numpy), add 'gcc musl-dev linux-headers' here too.
+              apk add --no-cache --virtual .build-deps py3-pip python3-dev
+              
+              # B. Install PIP Packages
+              # We use --break-system-packages to allow installing into system python
+              pip install --no-cache-dir --break-system-packages \$PIP_PKGS
+              
+              # C. Generate Manifest (Must be done BEFORE removing pip)
+              pip freeze | sort > /out/manifest-pip-${ARCH}.txt
+              
+              # D. CLEANUP: Remove pip and build tools
+              apk del .build-deps
+            else
+              touch /out/manifest-pip-${ARCH}.txt
+            fi
             
             echo \"$IMAGE_VERSION\" > /etc/image-version
             chmod 644 /etc/image-version
             
-            # Generate manifest
-            apk info -v | sort > /out/manifest-${ARCH}.txt
+            # 3. Generate APK Manifest (After cleanup, so pip doesn't show up)
+            apk info -v | sort > /out/manifest-apk-${ARCH}.txt
             
-            rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale /tmp/*
+            # Final System Cleanup
+            rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale /tmp/* /root/.cache
             mkdir -p /proc /sys /dev
           "
           
-          # Export raw rootfs
           docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
 
       # --- Compare Logic ---
@@ -163,19 +204,37 @@ jobs:
             CHANGED="true"
             CHANGELOG="Initial release / Full rebuild."
           else
-            DIFF=$(comm -3 prev-manifest.txt out/manifest-${ARCH}.txt)
-            if [ -n "$DIFF" ]; then
+            # Function to generate diff table
+            generate_diff() {
+              local type=$1
+              local old_file=$2
+              local new_file=$3
+              local diff_out=""
+              
+              local diff_raw=$(comm -3 "$old_file" "$new_file")
+              if [ -n "$diff_raw" ]; then
+                diff_out+=$'\n'"#### ${type^^} Changes"$'\n'
+                diff_out+="| Status | Package |"$'\n| :--- | :--- |'$'\n'
+                while IFS= read -r line; do
+                  clean=$(echo "$line" | xargs)
+                  if [[ "$line" == $'\t'* ]]; then
+                    diff_out+="| 🟢 Up | \`$clean\` |"$'\n'
+                  else
+                    diff_out+="| 🔴 Rm | \`$clean\` |"$'\n'
+                  fi
+                done <<< "$diff_raw"
+              fi
+              echo "$diff_out"
+            }
+
+            DIFF_APK=$(generate_diff "apk" prev-manifest-apk.txt out/manifest-apk-${ARCH}.txt)
+            DIFF_PIP=$(generate_diff "pip" prev-manifest-pip.txt out/manifest-pip-${ARCH}.txt)
+
+            if [ -n "$DIFF_APK" ] || [ -n "$DIFF_PIP" ]; then
               CHANGED="true"
-              CHANGELOG+="### Changes for ${ARCH}"$'\n'
-              CHANGELOG+="| Status | Package |"$'\n| :--- | :--- |'$'\n'
-              while IFS= read -r line; do
-                clean=$(echo "$line" | xargs)
-                if [[ "$line" == $'\t'* ]]; then
-                  CHANGELOG+="| 🟢 Up | \`$clean\` |"$'\n'
-                else
-                  CHANGELOG+="| 🔴 Rm | \`$clean\` |"$'\n'
-                fi
-              done <<< "$DIFF"
+              CHANGELOG+="### Changes for ${ARCH}"
+              CHANGELOG+="$DIFF_APK"
+              CHANGELOG+="$DIFF_PIP"
             fi
           fi
           
@@ -189,19 +248,20 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Upload Artifacts & State
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: build-data-${{ matrix.arch }}
           path: |
             out/alpine-rootfs-${{ matrix.arch }}.tar.gz
-            out/manifest-${{ matrix.arch }}.txt
+            out/manifest-apk-${{ matrix.arch }}.txt
+            out/manifest-pip-${{ matrix.arch }}.txt
             
       - name: Save Build State
         run: |
           mkdir -p state
           echo "${{ steps.compare.outputs.changed }}" > state/${{ matrix.arch }}.changed
           echo "${{ steps.compare.outputs.changelog }}" > state/${{ matrix.arch }}.log
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v4
         with:
           name: state-${{ matrix.arch }}
           path: state/*
@@ -214,7 +274,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download State
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v4
         with:
           pattern: state-*
           path: states
@@ -235,7 +295,7 @@ jobs:
 
       - name: Download Build Artifacts
         if: steps.check.outputs.needed == 'true'
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v4
         with:
           pattern: build-data-*
           path: raw_assets
@@ -246,30 +306,22 @@ jobs:
         run: |
           mkdir -p final_package
           
-          # Function to move and rename assets
           package_arch() {
             local SRC_ARCH=$1
             local DEST_DIR=$2
-            
             mkdir -p "final_package/$DEST_DIR"
-            
-            # Move and Rename Rootfs
             if [ -f "raw_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" ]; then
               mv "raw_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" \
                  "final_package/$DEST_DIR/libalpine-rootfs.tar.gz.so"
             fi
           }
 
-          # Map build artifacts to Android ABI folder names
           package_arch "x86_64"  "x86_64"
           package_arch "aarch64" "arm64-v8a"
           package_arch "arm"     "armeabi-v7a"
 
           echo "==> Creating Master Archive..."
           tar -czf alpine-rootfs.tar.gz -C final_package .
-          
-          ls -R final_package
-          ls -lh alpine-rootfs.tar.gz
 
       - name: Push Release
         if: steps.check.outputs.needed == 'true'

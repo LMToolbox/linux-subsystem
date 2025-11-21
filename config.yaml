@@ -1,0 +1,13 @@
+# config.yaml
+
+apk:
+  # Pip
+  - python3
+
+  # Exiftool
+  - exiftool
+
+pip:
+  # Python pkgs
+  - qrcode
+  - CurrencyConverter

@@ -1,13 +1,15 @@
 # config.yaml
 
 apk:
-  # Pip
-  - python3
+  - ffmpeg #TEST
 
-  # Exiftool
+  # Metadata editor
   - exiftool
 
+  - python3
 pip:
-  # Python pkgs
+  # QR Code generator
   - qrcode
+
+  # Currency converter
   - CurrencyConverter

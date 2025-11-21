@@ -257,7 +257,7 @@ jobs:
              
              # --- MAIN TABLE (x86_64) ---
              if [ -s "rows/x86_64.txt" ]; then
-               FINAL_LOG+="### 🚀 Changes (Main / x86_64)"$'\n'
+               FINAL_LOG+="### 🚀 Changes"$'\n'
                FINAL_LOG+="| Status | Package |"$'\n'
                FINAL_LOG+="| :--- | :--- |"$'\n'
                FINAL_LOG+=$(cat "rows/x86_64.txt")

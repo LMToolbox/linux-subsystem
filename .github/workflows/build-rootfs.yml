@@ -174,8 +174,10 @@ jobs:
         run: |
           mkdir -p prev_assets
           
-          # 1. Find latest release (Strict Logic)
-          LATEST_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName')
+          # 1. Find latest release (Filter out 'proot-')
+          # We fetch the last 20 tags, filter out any starting with "proot-", and take the top one.
+          LATEST_TAG=$(gh release list --limit 20 --exclude-drafts --exclude-pre-releases --json tagName \
+            --jq '.[] | select(.tagName | startswith("proot-") | not) | .tagName' | head -n 1 || echo "")
           
           echo "Latest detected tag: [$LATEST_TAG]"
           
@@ -254,6 +256,7 @@ jobs:
               echo "$PIP_DIFF" >> "$OUTPUT_FILE"
             fi
             
+            # Calculate hash of the diff content
             HASHES[$arch]=$(md5sum "$OUTPUT_FILE" | awk '{print $1}')
           done
 
@@ -268,12 +271,13 @@ jobs:
              HASH_ARM64=${HASHES["aarch64"]}
              HASH_ARM=${HASHES["arm"]}
              
-             # If all architectures have identical changes
+             # --- UNIFICATION LOGIC ---
+             # If all architectures have identical changes, we print ONE table.
              if [ "$HASH_X86" == "$HASH_ARM64" ] && [ "$HASH_X86" == "$HASH_ARM" ]; then
                 FINAL_LOG+="### 🚀 Changes (All Architectures)"
                 FINAL_LOG+=$(cat "diffs/x86_64.md")
              else
-                # If changes differ by arch
+                # If changes differ by arch, we print them individually
                 for arch in x86_64 aarch64 arm; do
                   if [ -s "diffs/${arch}.md" ]; then
                     FINAL_LOG+=$'\n\n'"### 📦 Changes for ${arch}"
@@ -290,7 +294,7 @@ jobs:
           echo "full_log<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_LOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
+          
       - name: Package Artifacts
         if: steps.changelog.outputs.needed == 'true'
         run: |

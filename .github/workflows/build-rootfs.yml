@@ -205,92 +205,95 @@ jobs:
       - name: Generate Unified Changelog
         id: changelog
         run: |
-          mkdir -p diffs
+          mkdir -p rows
           CHANGES_DETECTED="false"
           
-          # Define Comparison Logic
-          calc_diff() {
-            local type=$1
-            local old=$2
-            local new=$3
-            
-            # Ensure files exist and are strictly sorted for comm
-            [ -f "$old" ] || touch "$old"
-            [ -f "$new" ] || touch "$new"
-            sort -o "$old" "$old"
-            sort -o "$new" "$new"
-            
-            # diff_raw contains:
-            # Col 1 (Unique to Old/Removed)
-            # Col 2 (Unique to New/Added) - Indented by 1 tab
-            diff_raw=$(comm -3 "$old" "$new")
-            
-            if [ -n "$diff_raw" ]; then
-               # Process with awk to create table rows
-               # We strictly escape the package names to avoid markdown errors
-               table_rows=$(echo "$diff_raw" | awk -F'\t' '
+          # Function: Generate sorted table rows for a single arch
+          # Outputs to file: rows/{arch}.txt
+          generate_rows() {
+            local arch=$1
+            local outfile="rows/${arch}.txt"
+            touch "$outfile"
+
+            process_diff() {
+              local old=$1
+              local new=$2
+              [ -f "$old" ] || touch "$old"
+              [ -f "$new" ] || touch "$new"
+              sort -o "$old" "$old"
+              sort -o "$new" "$new"
+              
+              comm -3 "$old" "$new" | awk -F'\t' '
                  length($1) > 0 { print "| 🔴 Rm | `" $1 "` |" }
                  length($2) > 0 { print "| 🟢 Up | `" $2 "` |" }
-               ')
-               
-               echo -e "\n#### ${type^^} Changes\n| Status | Package |\n| :--- | :--- |\n$table_rows"
-               return 0
-            else
-               return 1
+               '
+            }
+            
+            # Capture APK changes
+            process_diff "prev_assets/manifest-apk-${arch}.txt" "current_assets/manifest-apk-${arch}.txt" >> "$outfile"
+            # Capture PIP changes
+            process_diff "prev_assets/manifest-pip-${arch}.txt" "current_assets/manifest-pip-${arch}.txt" >> "$outfile"
+            
+            # Sort the result to ensure deterministic comparisons later
+            sort -o "$outfile" "$outfile"
+            
+            if [ -s "$outfile" ]; then
+              CHANGES_DETECTED="true"
             fi
           }
 
-          # Loop Architectures
-          declare -A HASHES
-          
-          for arch in x86_64 aarch64 arm; do
-            OUTPUT_FILE="diffs/${arch}.md"
-            touch "$OUTPUT_FILE"
-            
-            APK_DIFF=$(calc_diff "apk" "prev_assets/manifest-apk-${arch}.txt" "current_assets/manifest-apk-${arch}.txt") || true
-            PIP_DIFF=$(calc_diff "pip" "prev_assets/manifest-pip-${arch}.txt" "current_assets/manifest-pip-${arch}.txt") || true
-            
-            if [ -n "$APK_DIFF" ] || [ -n "$PIP_DIFF" ]; then
-              CHANGES_DETECTED="true"
-              echo "$APK_DIFF" >> "$OUTPUT_FILE"
-              echo "$PIP_DIFF" >> "$OUTPUT_FILE"
-            fi
-            
-            # Calculate hash of the diff content
-            HASHES[$arch]=$(md5sum "$OUTPUT_FILE" | awk '{print $1}')
-          done
+          # 1. Generate raw rows for all arches
+          generate_rows "x86_64"
+          generate_rows "aarch64"
+          generate_rows "arm"
 
-          # Construct Final Log
+          # 2. Build Final Log
           FINAL_LOG=""
-          
+
           if [ "${{ steps.fetch_prev.outputs.is_initial }}" == "true" ]; then
              CHANGES_DETECTED="true"
              FINAL_LOG="Initial Release."
           elif [ "$CHANGES_DETECTED" == "true" ]; then
-             HASH_X86=${HASHES["x86_64"]}
-             HASH_ARM64=${HASHES["aarch64"]}
-             HASH_ARM=${HASHES["arm"]}
              
-             # --- UNIFICATION LOGIC ---
-             # If all architectures have identical changes, we print ONE table.
-             if [ "$HASH_X86" == "$HASH_ARM64" ] && [ "$HASH_X86" == "$HASH_ARM" ]; then
-                FINAL_LOG+="### 🚀 Changes (All Architectures)"
-                FINAL_LOG+=$(cat "diffs/x86_64.md")
+             # --- MAIN TABLE (x86_64) ---
+             if [ -s "rows/x86_64.txt" ]; then
+               FINAL_LOG+="### 🚀 Changes (Main / x86_64)"$'\n'
+               FINAL_LOG+="| Status | Package |"$'\n'
+               FINAL_LOG+="| :--- | :--- |"$'\n'
+               FINAL_LOG+=$(cat "rows/x86_64.txt")
              else
-                # If changes differ by arch, we print them individually
-                for arch in x86_64 aarch64 arm; do
-                  if [ -s "diffs/${arch}.md" ]; then
-                    FINAL_LOG+=$'\n\n'"### 📦 Changes for ${arch}"
-                    FINAL_LOG+=$(cat "diffs/${arch}.md")
-                  fi
-                done
+               FINAL_LOG+="No changes in x86_64 (Main)."
              fi
+             
+             # --- DIFF TABLES (Others) ---
+             # Function to append diff table
+             append_arch_diff() {
+               local arch=$1
+               local main_file="rows/x86_64.txt"
+               local arch_file="rows/${arch}.txt"
+               local unique_file="rows/${arch}_unique.txt"
+               
+               # Finds lines in arch_file that are NOT in main_file
+               # comm -13: suppress col 1 (unique to main) and col 3 (common)
+               # Output: Column 2 (Unique to Arch)
+               comm -13 "$main_file" "$arch_file" > "$unique_file"
+               
+               if [ -s "$unique_file" ]; then
+                  FINAL_LOG+=$'\n\n'"### 📦 ${arch} Specifics"$'\n'
+                  FINAL_LOG+="| Status | Package |"$'\n'
+                  FINAL_LOG+="| :--- | :--- |"$'\n'
+                  FINAL_LOG+=$(cat "$unique_file")
+               fi
+             }
+
+             append_arch_diff "aarch64"
+             append_arch_diff "arm"
           fi
 
+          # Force release override
           if [ "${{ inputs.force_release }}" == "true" ]; then CHANGES_DETECTED="true"; fi
 
           echo "needed=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
-          
           echo "full_log<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_LOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT

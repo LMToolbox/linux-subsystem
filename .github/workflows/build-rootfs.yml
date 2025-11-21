@@ -71,7 +71,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set Environment
         run: |
@@ -100,6 +100,7 @@ jobs:
             exit 1
           fi
 
+          # We explicitly sort the manifests inside the container to ensure determinism
           docker run --platform "$PLATFORM" \
             -e APK_PKGS="$APK_PKGS" \
             -e PIP_PKGS="$PIP_PKGS" \
@@ -140,7 +141,7 @@ jobs:
           docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-data-${{ matrix.arch }}
           path: |
@@ -156,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Current Build Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: build-data-*
           path: current_assets
@@ -169,22 +170,26 @@ jobs:
         run: |
           mkdir -p prev_assets
           
-          # Find latest release excluding current tag if it exists
-          LATEST_TAG=$(gh release list --limit 10 --exclude-drafts --exclude-pre-releases --json tagName \
-            --jq '.[] | select(.tagName | startswith("proot-") | not) | .tagName' | head -n 1 || echo "")
+          # 1. Find latest release (Strict Logic)
+          LATEST_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName')
           
-          echo "Latest tag found: $LATEST_TAG"
+          echo "Latest detected tag: [$LATEST_TAG]"
           
-          if [ -z "$LATEST_TAG" ]; then
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
             echo "is_initial=true" >> $GITHUB_OUTPUT
+            echo "::notice::No previous release found."
           else
             echo "is_initial=false" >> $GITHUB_OUTPUT
-            # Attempt to download manifests for all expected arches
+            
+            # 2. Attempt to download manifests (Strict Naming)
             for arch in x86_64 aarch64 arm; do
-              # Try new naming convention
+              # APK
               if ! gh release download "$LATEST_TAG" -p "manifest-apk-${arch}.txt" -O "prev_assets/manifest-apk-${arch}.txt" 2>/dev/null; then
+                 echo "No strict APK manifest found for $arch. Treating as new."
                  touch "prev_assets/manifest-apk-${arch}.txt"
               fi
+
+              # PIP
               if ! gh release download "$LATEST_TAG" -p "manifest-pip-${arch}.txt" -O "prev_assets/manifest-pip-${arch}.txt" 2>/dev/null; then
                  touch "prev_assets/manifest-pip-${arch}.txt"
               fi
@@ -197,44 +202,39 @@ jobs:
           mkdir -p diffs
           CHANGES_DETECTED="false"
           
-          # 1. Compare Function using AWK for reliable table generation
+          # Define Comparison Logic
           calc_diff() {
             local type=$1
             local old=$2
             local new=$3
             
-            # Ensure files exist and are sorted
+            # Ensure files exist and are strictly sorted for comm
             [ -f "$old" ] || touch "$old"
             [ -f "$new" ] || touch "$new"
+            sort -o "$old" "$old"
+            sort -o "$new" "$new"
             
-            # Use comm to find diffs, use awk to format markdown
-            # comm output:
-            # Col 1 (Lines unique to file1/Old) -> Removed
-            # Col 2 (Lines unique to file2/New) -> Added (Indented by TAB)
-            diff_body=$(comm -3 "$old" "$new" | awk '
-              BEGIN { count=0 }
-              /^\t/ { 
-                sub(/^\t/, "", $0); 
-                print "| 🟢 Up | `" $0 "` |"; 
-                count++ 
-              }
-              !/^\t/ { 
-                print "| 🔴 Re | `" $0 "` |"; 
-                count++ 
-              }
-              END { if(count==0) exit 1 }
-            ')
+            # diff_raw contains:
+            # Col 1 (Unique to Old/Removed)
+            # Col 2 (Unique to New/Added) - Indented by 1 tab
+            diff_raw=$(comm -3 "$old" "$new")
             
-            if [ $? -eq 0 ] && [ -n "$diff_body" ]; then
-               echo -e "\n#### ${type^^} Changes\n| Status | Package |\n| :--- | :--- |\n$diff_body"
+            if [ -n "$diff_raw" ]; then
+               # Process with awk to create table rows
+               # We strictly escape the package names to avoid markdown errors
+               table_rows=$(echo "$diff_raw" | awk -F'\t' '
+                 length($1) > 0 { print "| 🔴 Rm | `" $1 "` |" }
+                 length($2) > 0 { print "| 🟢 Up | `" $2 "` |" }
+               ')
+               
+               echo -e "\n#### ${type^^} Changes\n| Status | Package |\n| :--- | :--- |\n$table_rows"
                return 0
             else
                return 1
             fi
           }
 
-          # 2. Loop through architectures
-          # We track content hashes to group identical logs
+          # Loop Architectures
           declare -A HASHES
           
           for arch in x86_64 aarch64 arm; do
@@ -250,28 +250,26 @@ jobs:
               echo "$PIP_DIFF" >> "$OUTPUT_FILE"
             fi
             
-            # Calculate hash of the diff content
             HASHES[$arch]=$(md5sum "$OUTPUT_FILE" | awk '{print $1}')
           done
 
-          # 3. Construct Final Markdown
+          # Construct Final Log
           FINAL_LOG=""
           
           if [ "${{ steps.fetch_prev.outputs.is_initial }}" == "true" ]; then
              CHANGES_DETECTED="true"
-             FINAL_LOG="Initial Release / Full Rebuild."
+             FINAL_LOG="Initial Release."
           elif [ "$CHANGES_DETECTED" == "true" ]; then
-             # Check if all hashes are identical (and not empty)
              HASH_X86=${HASHES["x86_64"]}
              HASH_ARM64=${HASHES["aarch64"]}
              HASH_ARM=${HASHES["arm"]}
              
-             # Check if all generated logs are identical
+             # If all architectures have identical changes
              if [ "$HASH_X86" == "$HASH_ARM64" ] && [ "$HASH_X86" == "$HASH_ARM" ]; then
                 FINAL_LOG+="### 🚀 Changes (All Architectures)"
                 FINAL_LOG+=$(cat "diffs/x86_64.md")
              else
-                # If different, append individually (skipping empty ones)
+                # If changes differ by arch
                 for arch in x86_64 aarch64 arm; do
                   if [ -s "diffs/${arch}.md" ]; then
                     FINAL_LOG+=$'\n\n'"### 📦 Changes for ${arch}"
@@ -281,12 +279,10 @@ jobs:
              fi
           fi
 
-          # Force release override
           if [ "${{ inputs.force_release }}" == "true" ]; then CHANGES_DETECTED="true"; fi
 
           echo "needed=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
           
-          # Multiline output for log
           echo "full_log<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_LOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT

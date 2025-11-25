@@ -257,10 +257,10 @@ jobs:
               new="${NEW[$pkg]}"
               if [[ -n "$old" && -n "$new" ]]; then
                 if [[ "$old" != "$new" ]]; then
-                  echo "| 🔵 | \`$pkg\` | \`$old\` | \`$new\` |" >> "$outfile"
+                  echo "| ⬆️ | \`$pkg\` | \`$old\` | \`$new\` |" >> "$outfile"
                 fi
               elif [[ -n "$old" ]]; then
-                echo "| 🔴 | \`$pkg\` | \`$old\` | - |" >> "$outfile"
+                echo "| ❌ | \`$pkg\` | \`$old\` | - |" >> "$outfile"
               elif [[ -n "$new" ]]; then
                 echo "| 🟢 | \`$pkg\` | - | \`$new\` |" >> "$outfile"
               fi

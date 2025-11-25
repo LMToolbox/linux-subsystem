@@ -283,19 +283,19 @@ jobs:
             CHANGES_DETECTED="true"
             FINAL_LOG="Initial Release."
           elif [ "$CHANGES_DETECTED" == "true" ]; then
-            FINAL_LOG+="### 🚀 Changes\n"
-            FINAL_LOG+="| ● | Package | Old | New |\n"
-            FINAL_LOG+="|:--:|:--------|:----|:-----|\n"
-            FINAL_LOG+="$(cat rows/x86_64.txt)"
-
+            FINAL_LOG+="### 🚀 Changes"$'\n'
+            FINAL_LOG+="| ● | Package | Old | New |"$'\n'
+            FINAL_LOG+="|:--:|:--------|:----|:-----|"$'\n'
+            FINAL_LOG+=$(cat "rows/x86_64.txt")
+            
             for arch in aarch64 arm; do
               diff_out="rows/${arch}_specific.txt"
               comm -13 rows/x86_64.txt rows/${arch}.txt > "$diff_out"
               if [ -s "$diff_out" ]; then
-                FINAL_LOG+="\n\n### 📦 ${arch} Specifics\n"
-                FINAL_LOG+="| ● | Package | Old | New |\n"
-                FINAL_LOG+="|:--:|:--------|:----|:-----|\n"
-                FINAL_LOG+="$(cat "$diff_out")"
+                FINAL_LOG+=$'\n\n'"### 📦 ${arch} Specifics"$'\n'
+                FINAL_LOG+="| Status | Package |"$'\n'
+                FINAL_LOG+="| :--- | :--- |"$'\n'
+                FINAL_LOG+=$(cat "$unique_file")
               fi
             done
           fi

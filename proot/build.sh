@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-shopt -s nullglob
 
 # Load Configuration
 source ./config.sh
@@ -74,24 +73,32 @@ download_loader() {
     local TAG="${LOADER_TAG%%::*}"
     local VER="${LOADER_TAG##*::}"
 
-    # Normalize Architecture Name
+    # --- Normalize Architecture Name ---
+    # GitHub releases usually use 'aarch64' instead of 'arm64'
     local LOADER_ARCH="$ARCH"
     if [ "$ARCH" == "arm64" ]; then LOADER_ARCH="aarch64"; fi
 
-    # Download Main Loader
+    # --- 1. Download Main Loader ---
     local ASSET_NAME="libproot-loader-${LOADER_ARCH}-${VER}.so"
     local URL="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME}"
+
     echo " -> Downloading Main Loader ($LOADER_ARCH)..."
     curl -L -f -o "${DEST_DIR}/libproot-loader.so" "$URL" || {
         echo "Error: Failed to download loader from $URL"
         exit 1
     }
     
-    # Download 32-bit Loader (Only for 64-bit archs)
+    # --- 2. Download 32-bit Loader (Only for 64-bit archs) ---
+    # For x86_64 and arm64, we need the specific 'loader32' file 
+    # matching the HOST architecture, not the target 32-bit architecture.
+    
     if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "x86_64" ]; then
         local ASSET_NAME_32="libproot-loader32-${LOADER_ARCH}-${VER}.so"
         local URL_32="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME_32}"
+
         echo " -> Downloading 32-bit Loader (loader32 for $LOADER_ARCH)..."
+        
+        # We rename the downloaded asset to 'libproot-loader32.so' so Proot detects it
         curl -L -f -o "${DEST_DIR}/libproot-loader32.so" "$URL_32" || {
              echo "Error: Failed to download 32-bit loader from $URL_32"
              exit 1
@@ -114,76 +121,86 @@ build_arch() {
     rm -rf "$ARCH_BUILD_DIR"
     mkdir -p "$STATIC_ROOT" "$INSTALL_ROOT"
 
-    # --- Setup Environment ---
+    # 1. Setup Environment
     setup_ndk_env "$ARCH" "$ANDROID_API_LEVEL" "$ANDROID_NDK_HOME"
 
-    # --- Build Talloc ---
+    # 2. Build Talloc (Static)
     echo " -> Building Talloc..."
     cd "$SRC_DIR/talloc-$TALLOC_VERSION"
+    
+    # Generate answers file for cross-compilation
     generate_talloc_answers "cross-answers-$ARCH.txt"
+
+    # Clean previous builds
     make distclean >/dev/null 2>&1 || true
+
     ./configure build \
         --prefix="$INSTALL_ROOT" \
         --disable-rpath \
         --disable-python \
         --cross-compile \
-        --cross-answers="cross-answers-$ARCH.txt" >/dev/null
+        --cross-answers="cross-answers-$ARCH.txt" > /dev/null
+
+    # Build libtalloc.a manually if make install doesn't do it nicely for static
     make -j$(nproc)
+    
+    # Install headers and libs to STATIC_ROOT for Proot to find
     mkdir -p "$STATIC_ROOT/include" "$STATIC_ROOT/lib"
     ar rcs "$STATIC_ROOT/lib/libtalloc.a" bin/default/talloc*.o
     cp -f talloc.h "$STATIC_ROOT/include"
-
-    # --- Build Proot (Updated Method) ---
-    echo " -> Building Proot..."
+    
+    # 3. Build Proot (Static Only)
+    echo " -> Building Proot (Static)..."
     cd "$SRC_DIR/proot/src"
+    make distclean >/dev/null 2>&1 || true
+
+    # Common Flags pointing to our local talloc
+    export CFLAGS="$CFLAGS -I$STATIC_ROOT/include -Werror=implicit-function-declaration"
     
-    set-arch "$ARCH"  # assumes set-arch is defined in config/ndk scripts
+    # LDFLAGS for Static Build
+    export LDFLAGS="-L$STATIC_ROOT/lib -static -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,-z,max-page-size=16384"
     
-    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration"
-    export LDFLAGS="-L$STATIC_ROOT/lib"
-    export PROOT_UNBUNDLE_LOADER='.'
-    export PROOT_UNBUNDLE_LOADER_NAME='libproot-loader.so'
-    export PROOT_UNBUNDLE_LOADER_NAME_32='libproot-loader32.so'
+    # Unset Loader Variables (Static build does not use external loader)
+    unset PROOT_UNBUNDLE_LOADER 
+    unset PROOT_UNBUNDLE_LOADER_NAME
+    unset PROOT_UNBUNDLE_LOADER_NAME_32
+    
+    make -j$(nproc) V=1 "PREFIX=$INSTALL_ROOT" install > /dev/null
+    
+    # Copy the binary to install dir (renaming to generic 'proot')
+    cp -a ./proot "$INSTALL_ROOT/bin/proot"
+    
+    make distclean >/dev/null 2>&1 || true
 
-    if [ "$SUBARCH" == 'pre5' ]; then
-        export ANDROID_PRE5=1
-    else
-        unset ANDROID_PRE5
-    fi
+    # 4. Strip Binaries
+    echo " -> Stripping binaries..."
+    find "$INSTALL_ROOT/bin" -type f -exec "$STRIP" --strip-unneeded {} \; 2>/dev/null || true
 
-    make distclean || true
-    make V=1 "PREFIX=$INSTALL_ROOT" install
-    make distclean || true
-    CFLAGS="$CFLAGS -DUSERLAND" make V=1 "PREFIX=$INSTALL_ROOT" proot
-    cp -a ./proot "$INSTALL_ROOT/bin/proot-userland"
-
-    # Strip and rename binaries
-    (
-        cd "$INSTALL_ROOT/bin"
-        for FN in *; do
-            "$STRIP" "$FN"
-            case "$FN" in
-                lib*.so) ;;
-                *) mv -f "$FN" "lib$FN.so" ;;
-            esac
-        done
-    )
-
-    # --- Final Packaging ---
+    # 5. Final Packaging (Updated with ABI Renaming)
+    
+    # Map standard ARCH to Android ABI Directory names
     local ABI_DIR="$ARCH"
     if [ "$ARCH" == "arm64" ]; then ABI_DIR="arm64-v8a"; fi
     if [ "$ARCH" == "arm" ]; then ABI_DIR="armeabi-v7a"; fi
+    
     local FINAL_OUT="$OUT_DIR/$ABI_DIR"
+    
+    # Ensure output directory is clean before populating
     rm -rf "$FINAL_OUT"
     mkdir -p "$FINAL_OUT"
     
-    cp "$INSTALL_ROOT/bin/libproot.so" "$FINAL_OUT/libproot.so"
+    # Copy Proot and rename to libproot.so
+    echo " -> Packaging artifacts into $ABI_DIR..."
+    cp "$INSTALL_ROOT/bin/proot" "$FINAL_OUT/libproot.so"
+    
+    # Download and Copy Loaders (renames to libproot-loader.so / libproot-loader32.so)
     download_loader "$ARCH" "$FINAL_OUT"
-
+    
     echo "==> Finished $ARCH"
 }
 
 # --- Main Execution ---
+
 prepare_sources
 
 for ARCH in $TARGET_ARCHS; do

@@ -154,7 +154,7 @@ build_arch() {
     cd "$SRC_DIR/proot/src"
     make distclean >/dev/null 2>&1 || true
 
-    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration -DUSERLAND"    
+    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration"    
     export LDFLAGS="-L$STATIC_ROOT/lib -Wl,-z,max-page-size=16384"
     
     # Set Loader Variables

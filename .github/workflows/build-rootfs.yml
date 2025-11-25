@@ -228,8 +228,13 @@ jobs:
               declare -A OLD_MAP NEW_MAP
             
               while read -r line; do
-                pkg="${line%-*}"
-                ver="${line##*-}"
+                # Extract release
+                release="${line##*-r}"
+                pkgver="${line%-r$release}"     # remove -rXX
+                version="${pkgver##*-}"         # version
+                pkg="${pkgver%-${version}}"     # package name
+                ver="${version}-r${release}"    # full version-release
+                
                 OLD_MAP["$pkg"]="$ver"
               done < "$old"
             

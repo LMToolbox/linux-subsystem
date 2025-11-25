@@ -215,47 +215,49 @@ jobs:
             local outfile="rows/${arch}.txt"
             touch "$outfile"
 
-          process_diff() {
-            local old=$1
-            local new=$2
-            [ -f "$old" ] || touch "$old"
-            [ -f "$new" ] || touch "$new"
-            sort -o "$old" "$old"
-            sort -o "$new" "$new"
-          
-            extract_pkg() {
-              echo "$1" | sed 's/-[0-9].*$//'
-            }
-          
-            extract_ver() {
-              echo "$1" | sed 's/.*-\([0-9].*\)$/\1/'
-            }
-          
-            comm -3 "$old" "$new" | while IFS=$'\t' read -r removed added; do
-              if [ -n "$removed" ] && [ -n "$added" ]; then
-                old_pkg=$(extract_pkg "$removed")
-                new_pkg=$(extract_pkg "$added")
-                if [ "$old_pkg" = "$new_pkg" ]; then
-                  old_ver=$(extract_ver "$removed")
-                  new_ver=$(extract_ver "$added")
-                  echo "| 🔵 | \`$old_pkg\` | \`$old_ver\` | \`$new_ver\` |"
-                  continue
+            process_diff() {
+              local old=$1
+              local new=$2
+              [ -f "$old" ] || touch "$old"
+              [ -f "$new" ] || touch "$new"
+            
+              sort -o "$old" "$old"
+              sort -o "$new" "$new"
+            
+              # Build maps
+              declare -A OLD_MAP NEW_MAP
+            
+              while read -r line; do
+                pkg="${line%-*}"
+                ver="${line##*-}"
+                OLD_MAP["$pkg"]="$ver"
+              done < "$old"
+            
+              while read -r line; do
+                pkg="${line%-*}"
+                ver="${line##*-}"
+                NEW_MAP["$pkg"]="$ver"
+              done < "$new"
+            
+              # Union of all package names
+              all_pkgs=$(printf "%s\n" "${!OLD_MAP[@]}" "${!NEW_MAP[@]}" | sort -u)
+            
+              for pkg in $all_pkgs; do
+                old_ver="${OLD_MAP[$pkg]}"
+                new_ver="${NEW_MAP[$pkg]}"
+            
+                if [ -n "$old_ver" ] && [ -n "$new_ver" ]; then
+                  if [ "$old_ver" != "$new_ver" ]; then
+                    echo "| 🔵 | \`$pkg\` | \`$old_ver\` | \`$new_ver\` |"
+                  fi
+                elif [ -n "$old_ver" ]; then
+                  echo "| 🔴 | \`$pkg\` | \`$old_ver\` | - |"
+                elif [ -n "$new_ver" ]; then
+                  echo "| 🟢 | \`$pkg\` | - | \`$new_ver\` |"
                 fi
-              fi
-          
-              if [ -n "$removed" ]; then
-                pkg=$(extract_pkg "$removed")
-                ver=$(extract_ver "$removed")
-                echo "| 🔴 | \`$pkg\` | \`$ver\` | - |"
-              fi
-          
-              if [ -n "$added" ]; then
-                pkg=$(extract_pkg "$added")
-                ver=$(extract_ver "$added")
-                echo "| 🟢 | \`$pkg\` | - | \`$ver\` |"
-              fi
-            done
-          }
+              done
+            }
+            
             
             # Capture APK changes
             process_diff "prev_assets/manifest-apk-${arch}.txt" "current_assets/manifest-apk-${arch}.txt" >> "$outfile"

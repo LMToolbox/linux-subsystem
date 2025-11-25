@@ -65,48 +65,48 @@ Checking for HAVE_IFACE_IFCONF: FAIL
 EOF
 }
 
-# download_loader() {
-#     local ARCH=$1
-#     local DEST_DIR=$2
+download_loader() {
+    local ARCH=$1
+    local DEST_DIR=$2
 
-#     # Parse LOADER_TAG (Format: TAG::VERSION)
-#     local TAG="${LOADER_TAG%%::*}"
-#     local VER="${LOADER_TAG##*::}"
+    # Parse LOADER_TAG (Format: TAG::VERSION)
+    local TAG="${LOADER_TAG%%::*}"
+    local VER="${LOADER_TAG##*::}"
 
-#     # --- Normalize Architecture Name ---
-#     # GitHub releases usually use 'aarch64' instead of 'arm64'
-#     local LOADER_ARCH="$ARCH"
-#     if [ "$ARCH" == "arm64" ]; then LOADER_ARCH="aarch64"; fi
+    # --- Normalize Architecture Name ---
+    # GitHub releases usually use 'aarch64' instead of 'arm64'
+    local LOADER_ARCH="$ARCH"
+    if [ "$ARCH" == "arm64" ]; then LOADER_ARCH="aarch64"; fi
 
-#     # --- 1. Download Main Loader ---
-#     local ASSET_NAME="libproot-loader-${LOADER_ARCH}-${VER}.so"
-#     local URL="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME}"
+    # --- 1. Download Main Loader ---
+    local ASSET_NAME="libproot-loader-${LOADER_ARCH}-${VER}.so"
+    local URL="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME}"
 
-#     echo " -> Downloading Main Loader ($LOADER_ARCH)..."
-#     curl -L -f -o "${DEST_DIR}/libproot-loader.so" "$URL" || {
-#         echo "Error: Failed to download loader from $URL"
-#         exit 1
-#     }
+    echo " -> Downloading Main Loader ($LOADER_ARCH)..."
+    curl -L -f -o "${DEST_DIR}/libproot-loader.so" "$URL" || {
+        echo "Error: Failed to download loader from $URL"
+        exit 1
+    }
     
-#     # --- 2. Download 32-bit Loader (Only for 64-bit archs) ---
-#     # For x86_64 and arm64, we need the specific 'loader32' file 
-#     # matching the HOST architecture, not the target 32-bit architecture.
+    # --- 2. Download 32-bit Loader (Only for 64-bit archs) ---
+    # For x86_64 and arm64, we need the specific 'loader32' file 
+    # matching the HOST architecture, not the target 32-bit architecture.
     
-#     if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "x86_64" ]; then
-#         local ASSET_NAME_32="libproot-loader32-${LOADER_ARCH}-${VER}.so"
-#         local URL_32="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME_32}"
+    if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "x86_64" ]; then
+        local ASSET_NAME_32="libproot-loader32-${LOADER_ARCH}-${VER}.so"
+        local URL_32="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME_32}"
 
-#         echo " -> Downloading 32-bit Loader (loader32 for $LOADER_ARCH)..."
+        echo " -> Downloading 32-bit Loader (loader32 for $LOADER_ARCH)..."
         
-#         # We rename the downloaded asset to 'libproot-loader32.so' so Proot detects it
-#         curl -L -f -o "${DEST_DIR}/libproot-loader32.so" "$URL_32" || {
-#              echo "Error: Failed to download 32-bit loader from $URL_32"
-#              exit 1
-#         }
-#     else
-#         echo " -> Skipping 32-bit loader (not required for $ARCH)"
-#     fi
-# }
+        # We rename the downloaded asset to 'libproot-loader32.so' so Proot detects it
+        curl -L -f -o "${DEST_DIR}/libproot-loader32.so" "$URL_32" || {
+             echo "Error: Failed to download 32-bit loader from $URL_32"
+             exit 1
+        }
+    else
+        echo " -> Skipping 32-bit loader (not required for $ARCH)"
+    fi
+}
 
 build_arch() {
     local ARCH=$1
@@ -149,22 +149,19 @@ build_arch() {
     ar rcs "$STATIC_ROOT/lib/libtalloc.a" bin/default/talloc*.o
     cp -f talloc.h "$STATIC_ROOT/include"
     
-    # 3. Build Proot (Static Only)
-    echo " -> Building Proot (Static)..."
+    # 3. Build Proot (for APK only)
+    echo " -> Building Proot..."
     cd "$SRC_DIR/proot/src"
     make distclean >/dev/null 2>&1 || true
 
-    # Common Flags pointing to our local talloc
-    export CFLAGS="$CFLAGS -I$STATIC_ROOT/include -Werror=implicit-function-declaration"
+    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration -DUSERLAND"    
+    export LDFLAGS="-L$STATIC_ROOT/lib -Wl,-z,max-page-size=16384"
     
-    # LDFLAGS for Static Build
-    export LDFLAGS="-L$STATIC_ROOT/lib -static -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,-z,max-page-size=16384"
-    
-    # Unset Loader Variables (Static build does not use external loader)
-    unset PROOT_UNBUNDLE_LOADER 
-    unset PROOT_UNBUNDLE_LOADER_NAME
-    unset PROOT_UNBUNDLE_LOADER_NAME_32
-    
+    # Set Loader Variables
+    export PROOT_UNBUNDLE_LOADER='.'
+    export PROOT_UNBUNDLE_LOADER_NAME='libproot-loader.so'
+    export PROOT_UNBUNDLE_LOADER_NAME_32='libproot-loader32.so'
+
     make -j$(nproc) V=1 "PREFIX=$INSTALL_ROOT" install > /dev/null
     
     # Copy the binary to install dir (renaming to generic 'proot')

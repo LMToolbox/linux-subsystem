@@ -215,19 +215,47 @@ jobs:
             local outfile="rows/${arch}.txt"
             touch "$outfile"
 
-            process_diff() {
-              local old=$1
-              local new=$2
-              [ -f "$old" ] || touch "$old"
-              [ -f "$new" ] || touch "$new"
-              sort -o "$old" "$old"
-              sort -o "$new" "$new"
-              
-              comm -3 "$old" "$new" | awk -F'\t' '
-                 length($1) > 0 { print "| 🔴 Rm | `" $1 "` |" }
-                 length($2) > 0 { print "| 🟢 Up | `" $2 "` |" }
-               '
+          process_diff() {
+            local old=$1
+            local new=$2
+            [ -f "$old" ] || touch "$old"
+            [ -f "$new" ] || touch "$new"
+            sort -o "$old" "$old"
+            sort -o "$new" "$new"
+          
+            extract_pkg() {
+              echo "$1" | sed 's/-[0-9].*$//'
             }
+          
+            extract_ver() {
+              echo "$1" | sed 's/.*-\([0-9].*\)$/\1/'
+            }
+          
+            comm -3 "$old" "$new" | while IFS=$'\t' read -r removed added; do
+              if [ -n "$removed" ] && [ -n "$added" ]; then
+                old_pkg=$(extract_pkg "$removed")
+                new_pkg=$(extract_pkg "$added")
+                if [ "$old_pkg" = "$new_pkg" ]; then
+                  old_ver=$(extract_ver "$removed")
+                  new_ver=$(extract_ver "$added")
+                  echo "| 🔵 | \`$old_pkg\` | \`$old_ver\` | \`$new_ver\` |"
+                  continue
+                fi
+              fi
+          
+              if [ -n "$removed" ]; then
+                pkg=$(extract_pkg "$removed")
+                ver=$(extract_ver "$removed")
+                echo "| 🔴 | \`$pkg\` | \`$ver\` | - |"
+              fi
+          
+              if [ -n "$added" ]; then
+                pkg=$(extract_pkg "$added")
+                ver=$(extract_ver "$added")
+                echo "| 🟢 | \`$pkg\` | - | \`$ver\` |"
+              fi
+            done
+          }
             
             # Capture APK changes
             process_diff "prev_assets/manifest-apk-${arch}.txt" "current_assets/manifest-apk-${arch}.txt" >> "$outfile"
@@ -258,8 +286,8 @@ jobs:
              # --- MAIN TABLE (x86_64) ---
              if [ -s "rows/x86_64.txt" ]; then
                FINAL_LOG+="### 🚀 Changes"$'\n'
-               FINAL_LOG+="| Status | Package |"$'\n'
-               FINAL_LOG+="| :--- | :--- |"$'\n'
+               FINAL_LOG+="| ● | Package | Old | New |"$'\n'
+               FINAL_LOG+="|:--:|:--------|:----|:-----|"$'\n'
                FINAL_LOG+=$(cat "rows/x86_64.txt")
              else
                FINAL_LOG+="No changes in x86_64 (Main)."

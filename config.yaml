@@ -10,6 +10,7 @@ apk:
 pip:
   - qrcode[pil]        # QR Code generator
   - CurrencyConverter  # Currency converter
+  - --no-binary :all:  # Forces all packages to build from source
 
 # Build-only dependencies
 # These will be installed, used for setup/pip, and removed before final export.

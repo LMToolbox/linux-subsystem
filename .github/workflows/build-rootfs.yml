@@ -40,7 +40,7 @@ jobs:
           BASE_VER=$(date +'%y.%m.%d')
           NEW_TAG="$BASE_VER"
           EXISTING_TAGS=$(git tag -l "${BASE_VER}*")
-           
+            
           if [[ "$EXISTING_TAGS" == *"$BASE_VER"* ]]; then
              for suffix in a b c d e f g; do
                if [[ "$EXISTING_TAGS" != *"${BASE_VER}${suffix}"* ]]; then
@@ -91,9 +91,11 @@ jobs:
           IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mkdir -p out
-           
+            
           if [ -f config.yaml ]; then
             APK_PKGS=$(yq -r '.apk[] // ""' config.yaml | tr '\n' ' ')
+            # Parse build dependencies
+            APK_BUILD_PKGS=$(yq -r '.apk_build[] // ""' config.yaml | tr '\n' ' ')
             PIP_PKGS=$(yq -r '.pip[] // ""' config.yaml | tr '\n' ' ')
           else
             echo "No config.yaml found!"
@@ -103,41 +105,52 @@ jobs:
           # We explicitly sort the manifests inside the container to ensure determinism
           docker run --platform "$PLATFORM" \
             -e APK_PKGS="$APK_PKGS" \
+            -e APK_BUILD_PKGS="$APK_BUILD_PKGS" \
             -e PIP_PKGS="$PIP_PKGS" \
             -v $(pwd)/out:/out \
             --name rootfs alpine:"${ALPINE_VERSION}" sh -euxc "
-           
+            
             apk -U upgrade --no-cache
-           
+            
+            # 0. Install Custom Build Dependencies (Virtual Tag for easy removal)
+            # We install these FIRST so they are available for any pip builds
+            if [ -n \"\$APK_BUILD_PKGS\" ]; then 
+              apk add --no-cache --virtual .custom-build-deps \$APK_BUILD_PKGS
+            fi
+
             # 1. Install User Runtime APK Packages
             if [ -n \"\$APK_PKGS\" ]; then 
               apk add --no-cache \$APK_PKGS
             fi
-           
+            
             # 2. Handle PIP Packages
-            if [ -n \"\$PIP_PKGS\" ]; then
-              apk add --no-cache --virtual .build-deps py3-pip python3-dev
+            if [ -n \"\$PIP_PKGS\" ]; then              
+              # Install user pip packages (might rely on .custom-build-deps installed in Step 0)
               pip install --no-cache-dir --break-system-packages \$PIP_PKGS
               
               # Manifest PIP (Before cleanup)
               pip freeze | sort > /out/manifest-pip-${ARCH}.txt
-              
-              apk del .build-deps
             else
               touch /out/manifest-pip-${ARCH}.txt
             fi
-           
+
+            # 3. Cleanup Custom Build Dependencies
+            # We remove these BEFORE generating the APK manifest so they don't appear in the logs
+            if [ -n \"\$APK_BUILD_PKGS\" ]; then
+              apk del .custom-build-deps
+            fi
+            
             echo \"$IMAGE_VERSION\" > /etc/image-version
             chmod 644 /etc/image-version
-           
-            # 3. Generate APK Manifest
+            
+            # 4. Generate APK Manifest (Now clean of build deps)
             apk info -v | sort > /out/manifest-apk-${ARCH}.txt
-           
-            # Cleanup
+            
+            # Cleanup Caches
             rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale /tmp/* /root/.cache
             mkdir -p /proc /sys /dev
           "
-           
+            
           docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
 
       - name: Upload Artifacts
@@ -173,21 +186,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p prev_assets
-          
+           
           # 1. Find latest release (Filter out 'proot-')
-          # We fetch the last 20 tags, filter out any starting with "proot-", and take the top one.
           LATEST_TAG=$(gh release list --limit 20 --exclude-drafts --exclude-pre-releases --json tagName \
             --jq '.[] | select(.tagName | startswith("proot-") | not) | .tagName' | head -n 1 || echo "")
-          
+           
           echo "Latest detected tag: [$LATEST_TAG]"
-          
+           
           if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
             echo "is_initial=true" >> $GITHUB_OUTPUT
             echo "::notice::No previous release found."
           else
             echo "is_initial=false" >> $GITHUB_OUTPUT
             
-            # 2. Attempt to download manifests (Strict Naming)
+            # 2. Attempt to download manifests
             for arch in x86_64 aarch64 arm; do
               # APK
               if ! gh release download "$LATEST_TAG" -p "manifest-apk-${arch}.txt" -O "prev_assets/manifest-apk-${arch}.txt" 2>/dev/null; then
@@ -210,7 +222,6 @@ jobs:
 
           parse_apk_line() {
             local line="$1"
-            # alpine:   pkgname-version-release
             pkg="${line%%-[0-9]*}"
             ver="${line#${pkg}-}"
             echo "$pkg $ver"
@@ -218,7 +229,6 @@ jobs:
 
           parse_pip_line() {
             local line="$1"
-            # pip: pkg==version
             pkg="${line%%==*}"
             ver="${line#${pkg}==}"
             echo "$pkg $ver"
@@ -229,9 +239,6 @@ jobs:
             local outfile="rows/${arch}.txt"
             touch "$outfile"
 
-            # --- FIX: MERGE FILES BEFORE READING ---
-            # We merge APK and PIP files into temp files so the while loop
-            # can read both without running in a pipe subshell.
             cat "prev_assets/manifest-apk-${arch}.txt" "prev_assets/manifest-pip-${arch}.txt" > combined_old.txt
             cat "current_assets/manifest-apk-${arch}.txt" "current_assets/manifest-pip-${arch}.txt" > combined_new.txt
 
@@ -281,7 +288,6 @@ jobs:
               CHANGES_DETECTED="true"
             fi
             
-            # Cleanup temp files
             rm combined_old.txt combined_new.txt
           }
 
@@ -331,13 +337,13 @@ jobs:
             mkdir -p "final_package/$DEST_DIR"
             if [ -f "current_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" ]; then
               mv "current_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" \
-                 "final_package/$DEST_DIR/libalpine-rootfs.tar.gz.so"
+                  "final_package/$DEST_DIR/libalpine-rootfs.tar.gz.so"
             fi
           }
 
           package_arch "x86_64"  "x86_64"
           package_arch "aarch64" "arm64-v8a"
-          package_arch "arm"     "armeabi-v7a"
+          package_arch "arm"      "armeabi-v7a"
 
           echo "==> Creating Master Archive..."
           tar -czf alpine-rootfs.tar.gz -C final_package .

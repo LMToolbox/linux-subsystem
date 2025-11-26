@@ -191,7 +191,7 @@ build_arch() {
     cp "$INSTALL_ROOT/bin/proot" "$FINAL_OUT/libproot.so"
     
     # Download and Copy Loaders (renames to libproot-loader.so / libproot-loader32.so)
-    # download_loader "$ARCH" "$FINAL_OUT"
+    download_loader "$ARCH" "$FINAL_OUT"
     
     echo "==> Finished $ARCH"
 }

@@ -148,17 +148,27 @@ jobs:
             
             # Cleanup Caches
             rm -rf /var/cache/apk/* /usr/share/man /usr/share/doc /usr/share/locale /tmp/* /root/.cache
+            find /usr/lib/python* -name "__pycache__" -type d -exec rm -rf "{}" +
+            find /usr/lib/python* -name "*.pyc" -type f -delete
+            find /usr/lib/python* -name "*.pyo" -type f -delete
+            rm -rf /usr/lib/python*/test \
+                   /usr/lib/python*/ensurepip \
+                   /usr/lib/python*/idlelib \
+                   /usr/lib/python*/pydoc_data
+            rm -rf /usr/share/perl5/core_perl/pod
+             rm -rf /usr/include /usr/lib/*.a 
+             
             mkdir -p /proc /sys /dev
           "
             
-          docker export rootfs | gzip -c > "out/alpine-rootfs-${ARCH}.tar.gz"
+          docker export rootfs | xz -9e -c > "out/alpine-rootfs-${ARCH}.tar.xz"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v5
         with:
           name: build-data-${{ matrix.arch }}
           path: |
-            out/alpine-rootfs-${{ matrix.arch }}.tar.gz
+            out/alpine-rootfs-${{ matrix.arch }}.tar.xz
             out/manifest-apk-${{ matrix.arch }}.txt
             out/manifest-pip-${{ matrix.arch }}.txt
 
@@ -335,9 +345,9 @@ jobs:
             local SRC_ARCH=$1
             local DEST_DIR=$2
             mkdir -p "final_package/$DEST_DIR"
-            if [ -f "current_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" ]; then
-              mv "current_assets/alpine-rootfs-${SRC_ARCH}.tar.gz" \
-                  "final_package/$DEST_DIR/libalpine-rootfs.tar.gz.so"
+            if [ -f "current_assets/alpine-rootfs-${SRC_ARCH}.tar.xz" ]; then
+              mv "current_assets/alpine-rootfs-${SRC_ARCH}.tar.xz" \
+                  "final_package/$DEST_DIR/libalpine-rootfs.tar.xz.so"
             fi
           }
 

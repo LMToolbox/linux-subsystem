@@ -10,7 +10,7 @@ apk:
 pip:
   - qrcode[pil]        # QR Code generator
   - CurrencyConverter  # Currency converter
-  - "--no-binary pillow,qrcode,CurrencyConverter"
+  - "--no-binary pillow"
 
 # Build-only dependencies
 # These will be installed, used for setup/pip, and removed before final export.

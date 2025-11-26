@@ -16,6 +16,7 @@ pip:
 # These will be installed, used for setup/pip, and removed before final export.
 apk_build:
   - build-base       # GCC, Make, libc-dev
+  - linux-headers
   - python3-dev      # Python developer tools
   - py3-setuptools   
   - py3-pip          # Pip for python

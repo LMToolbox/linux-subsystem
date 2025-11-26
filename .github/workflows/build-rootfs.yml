@@ -229,8 +229,15 @@ jobs:
             local outfile="rows/${arch}.txt"
             touch "$outfile"
 
+            # --- FIX: MERGE FILES BEFORE READING ---
+            # We merge APK and PIP files into temp files so the while loop
+            # can read both without running in a pipe subshell.
+            cat "prev_assets/manifest-apk-${arch}.txt" "prev_assets/manifest-pip-${arch}.txt" > combined_old.txt
+            cat "current_assets/manifest-apk-${arch}.txt" "current_assets/manifest-pip-${arch}.txt" > combined_new.txt
+
             declare -A OLD NEW
 
+            # Read Combined OLD
             while read -r line; do
               [ -z "$line" ] && continue
               if [[ "$line" == *==* ]]; then
@@ -239,7 +246,9 @@ jobs:
                 read pkg ver <<<"$(parse_apk_line "$line")"
               fi
               OLD["$pkg"]="$ver"
-            done < "prev_assets/manifest-apk-${arch}.txt"
+            done < combined_old.txt
+
+            # Read Combined NEW
             while read -r line; do
               [ -z "$line" ] && continue
               if [[ "$line" == *==* ]]; then
@@ -248,7 +257,7 @@ jobs:
                 read pkg ver <<<"$(parse_apk_line "$line")"
               fi
               NEW["$pkg"]="$ver"
-            done < "current_assets/manifest-apk-${arch}.txt"
+            done < combined_new.txt
 
             ALL_PKGS=$(printf "%s\n" "${!OLD[@]}" "${!NEW[@]}" | sort -u)
 
@@ -271,6 +280,9 @@ jobs:
             if [ -s "$outfile" ]; then
               CHANGES_DETECTED="true"
             fi
+            
+            # Cleanup temp files
+            rm combined_old.txt combined_new.txt
           }
 
           generate_rows x86_64
@@ -306,6 +318,7 @@ jobs:
 
           echo "needed=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
           printf "full_log<<EOF\n%s\nEOF\n" "$FINAL_LOG" >> $GITHUB_OUTPUT
+
           
       - name: Package Artifacts
         if: steps.changelog.outputs.needed == 'true'

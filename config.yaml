@@ -1,9 +1,26 @@
-# config.yaml
-
 apk:
   - exiftool # Metadata editor
 
-  - python3
+  # --- DEPEND #1 qrcode[pil] (from Pillow) ---
+  - libjpeg
+  - zlib
+  # --- END_DEPEND #1 ---
+
+  - python3  
 pip:
-  - qrcode # QR Code generator
+  - qrcode[pil]        # QR Code generator
   - CurrencyConverter  # Currency converter
+
+# Build-only dependencies
+# These will be installed, used for setup/pip, and removed before final export.
+apk_build:
+  - build-base       # GCC, Make, libc-dev
+  - python3-dev      # Python developer tools
+  - py3-setuptools   
+  - py3-pip          # Pip for python
+  - git              # Sometimes needed for pip install git+...
+  # --- DEPEND #1 qrcode[pil] (from Pillow) ---
+  - jpeg-dev 
+  - zlib-dev
+  # --- END_DEPEND #1 ---
+  

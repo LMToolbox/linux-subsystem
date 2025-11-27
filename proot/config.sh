@@ -12,6 +12,10 @@ export LOADER_TAG="proot-2025.10.04-r1::5.1.107-67"
 # The GitHub User/Repo for the loader
 export LOADER_REPO="termux-play-store/termux-packages"
 
+# Termux ELF Cleaner (Used to fix linker warnings on older Androids)
+export ELF_CLEANER_REPO="termux/termux-elf-cleaner"
+export ELF_CLEANER_TAG="v3.0.1" # Check for latest version
+
 # --- Android Configuration ---
 export ANDROID_API_LEVEL="24"
 # Architectures to build

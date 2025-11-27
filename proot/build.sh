@@ -61,7 +61,7 @@ compile_host_tools() {
     cd "$SRC_DIR/termux-elf-cleaner"
     
     # Since we are on Alpine, ensure g++ and make are installed
-    apk add build-base git (Assuming user has these)
+    apk add build-base git
     
     # We compile for the HOST (Alpine), not Android
     # We avoid the Makefile to ensure we don't accidentally pick up NDK flags if they are exported

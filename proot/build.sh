@@ -37,6 +37,41 @@ prepare_sources() {
         fi
         cd - > /dev/null
     fi
+
+    # 3. Download Termux ELF Cleaner (For fixing linker warnings)
+    if [ ! -d "$SRC_DIR/termux-elf-cleaner" ]; then
+        echo " -> Cloning Termux ELF Cleaner ($ELF_CLEANER_TAG)..."
+        git clone https://github.com/${ELF_CLEANER_REPO}.git "$SRC_DIR/termux-elf-cleaner"
+        cd "$SRC_DIR/termux-elf-cleaner"
+        git checkout "$ELF_CLEANER_TAG"
+        cd - > /dev/null
+    fi
+}
+
+compile_host_tools() {
+    echo "==> Compiling Host Tools (Alpine Native)..."
+    
+    # Check if we already built the cleaner
+    if [ -f "$SRC_DIR/termux-elf-cleaner/termux-elf-cleaner" ]; then
+        echo " -> termux-elf-cleaner already built."
+        return
+    fi
+
+    echo " -> Building termux-elf-cleaner..."
+    cd "$SRC_DIR/termux-elf-cleaner"
+    
+    # Since we are on Alpine, ensure g++ and make are installed
+    apk add build-base git (Assuming user has these)
+    
+    # We compile for the HOST (Alpine), not Android
+    # We avoid the Makefile to ensure we don't accidentally pick up NDK flags if they are exported
+    g++ -std=c++11 -Wall -Wextra -pedantic -O3 termux-elf-cleaner.cpp -o termux-elf-cleaner
+
+    if [ ! -f "termux-elf-cleaner" ]; then
+        echo "Error: Failed to compile termux-elf-cleaner"
+        exit 1
+    fi
+    cd - > /dev/null
 }
 
 generate_talloc_answers() {
@@ -74,7 +109,6 @@ download_loader() {
     local VER="${LOADER_TAG##*::}"
 
     # --- Normalize Architecture Name ---
-    # GitHub releases usually use 'aarch64' instead of 'arm64'
     local LOADER_ARCH="$ARCH"
     if [ "$ARCH" == "arm64" ]; then LOADER_ARCH="aarch64"; fi
 
@@ -89,16 +123,11 @@ download_loader() {
     }
     
     # --- 2. Download 32-bit Loader (Only for 64-bit archs) ---
-    # For x86_64 and arm64, we need the specific 'loader32' file 
-    # matching the HOST architecture, not the target 32-bit architecture.
-    
     if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "x86_64" ]; then
         local ASSET_NAME_32="libproot-loader32-${LOADER_ARCH}-${VER}.so"
         local URL_32="https://github.com/${LOADER_REPO}/releases/download/${TAG}/${ASSET_NAME_32}"
 
         echo " -> Downloading 32-bit Loader (loader32 for $LOADER_ARCH)..."
-        
-        # We rename the downloaded asset to 'libproot-loader32.so' so Proot detects it
         curl -L -f -o "${DEST_DIR}/libproot-loader32.so" "$URL_32" || {
              echo "Error: Failed to download 32-bit loader from $URL_32"
              exit 1
@@ -128,10 +157,7 @@ build_arch() {
     echo " -> Building Talloc..."
     cd "$SRC_DIR/talloc-$TALLOC_VERSION"
     
-    # Generate answers file for cross-compilation
     generate_talloc_answers "cross-answers-$ARCH.txt"
-
-    # Clean previous builds
     make distclean >/dev/null 2>&1 || true
 
     ./configure build \
@@ -141,56 +167,55 @@ build_arch() {
         --cross-compile \
         --cross-answers="cross-answers-$ARCH.txt" > /dev/null
 
-    # Build libtalloc.a manually if make install doesn't do it nicely for static
     make -j$(nproc)
     
-    # Install headers and libs to STATIC_ROOT for Proot to find
     mkdir -p "$STATIC_ROOT/include" "$STATIC_ROOT/lib"
     ar rcs "$STATIC_ROOT/lib/libtalloc.a" bin/default/talloc*.o
     cp -f talloc.h "$STATIC_ROOT/include"
     
-    # 3. Build Proot (for APK only)
+    # 3. Build Proot
     echo " -> Building Proot..."
     cd "$SRC_DIR/proot/src"
     make distclean >/dev/null 2>&1 || true
 
-    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration"    
+    export CFLAGS="-I$STATIC_ROOT/include -Werror=implicit-function-declaration"      
     export LDFLAGS="-L$STATIC_ROOT/lib -Wl,-z,max-page-size=16384"
     
-    # Set Loader Variables
     export PROOT_UNBUNDLE_LOADER='.'
     export PROOT_UNBUNDLE_LOADER_NAME='libproot-loader.so'
     export PROOT_UNBUNDLE_LOADER_NAME_32='libproot-loader32.so'
 
     make -j$(nproc) V=1 "PREFIX=$INSTALL_ROOT" install > /dev/null
     
-    # Copy the binary to install dir (renaming to generic 'proot')
+    # Copy binary to install location
     cp -a ./proot "$INSTALL_ROOT/bin/proot"
-    
     make distclean >/dev/null 2>&1 || true
 
-    # 4. Strip Binaries
+    # 4. Clean ELF Header (Fixes Android 7 linker warnings)
+    echo " -> Running termux-elf-cleaner..."
+    # We run the tool built in compile_host_tools
+    "$SRC_DIR/termux-elf-cleaner/termux-elf-cleaner" \
+        --api-level "$ANDROID_API_LEVEL" \
+        "$INSTALL_ROOT/bin/proot" || {
+            echo "Error: termux-elf-cleaner failed"
+            exit 1
+        }
+
+    # 5. Strip Binaries
     echo " -> Stripping binaries..."
     find "$INSTALL_ROOT/bin" -type f -exec "$STRIP" --strip-unneeded {} \; 2>/dev/null || true
 
-    # 5. Final Packaging (Updated with ABI Renaming)
-    
-    # Map standard ARCH to Android ABI Directory names
+    # 6. Packaging
     local ABI_DIR="$ARCH"
     if [ "$ARCH" == "arm64" ]; then ABI_DIR="arm64-v8a"; fi
     if [ "$ARCH" == "arm" ]; then ABI_DIR="armeabi-v7a"; fi
     
     local FINAL_OUT="$OUT_DIR/$ABI_DIR"
-    
-    # Ensure output directory is clean before populating
     rm -rf "$FINAL_OUT"
     mkdir -p "$FINAL_OUT"
     
-    # Copy Proot and rename to libproot.so
     echo " -> Packaging artifacts into $ABI_DIR..."
     cp "$INSTALL_ROOT/bin/proot" "$FINAL_OUT/libproot.so"
-    
-    # Download and Copy Loaders (renames to libproot-loader.so / libproot-loader32.so)
     download_loader "$ARCH" "$FINAL_OUT"
     
     echo "==> Finished $ARCH"
@@ -199,6 +224,7 @@ build_arch() {
 # --- Main Execution ---
 
 prepare_sources
+compile_host_tools  # <--- Build the cleaner on the Alpine host first
 
 for ARCH in $TARGET_ARCHS; do
     build_arch "$ARCH"

@@ -8,7 +8,7 @@ on:
       alpine_version:
         description: "Alpine version"
         required: false
-        default: "3.22.2"
+        default: "3"
       force_release:
         description: "Force release even if no changes?"
         type: boolean
@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  DEFAULT_ALPINE_VERSION: "3.22.2"
+  DEFAULT_ALPINE_VERSION: "3"
 
 jobs:
   # ------------------------------------------------------------------

@@ -37,38 +37,35 @@ prepare_sources() {
         fi
         cd - > /dev/null
     fi
-
-    # 3. Download Termux ELF Cleaner (For fixing linker warnings)
-    if [ ! -d "$SRC_DIR/termux-elf-cleaner" ]; then
-        echo " -> Cloning Termux ELF Cleaner ($ELF_CLEANER_TAG)..."
-        git clone https://github.com/${ELF_CLEANER_REPO}.git "$SRC_DIR/termux-elf-cleaner"
-        cd "$SRC_DIR/termux-elf-cleaner"
-        git checkout "$ELF_CLEANER_TAG"
-        cd - > /dev/null
-    fi
 }
 
-compile_host_tools() {
-    echo "==> Compiling Host Tools (Alpine Native)..."
+setup_host_tools() {
+    echo "==> Setting up Host Tools..."
     
-    # Check if we already built the cleaner
-    if [ -f "$SRC_DIR/termux-elf-cleaner/termux-elf-cleaner" ]; then
-        echo " -> termux-elf-cleaner already built."
+    local DEST_DIR="$SRC_DIR/termux-elf-cleaner"
+    local BINARY="$DEST_DIR/termux-elf-cleaner"
+
+    # Check if we already downloaded it
+    if [ -x "$BINARY" ]; then
+        echo " -> termux-elf-cleaner already exists."
         return
     fi
 
-    echo " -> Building termux-elf-cleaner..."
-    cd "$SRC_DIR/termux-elf-cleaner"
-        
-    # We compile for the HOST (Alpine), not Android
-    # We avoid the Makefile to ensure we don't accidentally pick up NDK flags if they are exported
-    g++ -std=c++11 -Wall -Wextra -pedantic -O3 termux-elf-cleaner.cpp -o termux-elf-cleaner
-
-    if [ ! -f "termux-elf-cleaner" ]; then
-        echo "Error: Failed to compile termux-elf-cleaner"
+    echo " -> Downloading termux-elf-cleaner binary ($ELF_CLEANER_TAG)..."
+    
+    mkdir -p "$DEST_DIR"
+    
+    # URL format for the binary release
+    local URL="https://github.com/${ELF_CLEANER_REPO}/releases/download/${ELF_CLEANER_TAG}/termux-elf-cleaner"
+    
+    curl -L -f -o "$BINARY" "$URL" || {
+        echo "Error: Failed to download termux-elf-cleaner binary from:"
+        echo "  $URL"
         exit 1
-    fi
-    cd - > /dev/null
+    }
+
+    chmod +x "$BINARY"
+    echo " -> Download complete."
 }
 
 generate_talloc_answers() {
@@ -190,7 +187,14 @@ build_arch() {
 
     # 4. Clean ELF Header (Fixes Android 7 linker warnings)
     echo " -> Running termux-elf-cleaner..."
-    # We run the tool built in compile_host_tools
+    
+    # Check if tool exists
+    if [ ! -x "$SRC_DIR/termux-elf-cleaner/termux-elf-cleaner" ]; then
+        echo "Error: Host tool termux-elf-cleaner not found!"
+        echo "It should have been downloaded by setup_host_tools."
+        exit 1
+    fi
+
     "$SRC_DIR/termux-elf-cleaner/termux-elf-cleaner" \
         --api-level "$ANDROID_API_LEVEL" \
         "$INSTALL_ROOT/bin/proot" || {
@@ -221,7 +225,7 @@ build_arch() {
 # --- Main Execution ---
 
 prepare_sources
-compile_host_tools  # <--- Build the cleaner on the Alpine host first
+setup_host_tools
 
 for ARCH in $TARGET_ARCHS; do
     build_arch "$ARCH"

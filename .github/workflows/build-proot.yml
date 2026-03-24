@@ -61,7 +61,7 @@ jobs:
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r27d
+          ndk-version: r29
 
       - name: Build PRoot
         env:
@@ -117,6 +117,6 @@ jobs:
              - `arm64-v8a/`
              - `x86_64/`
              
-             *Built using NDK r27d.*
+             *Built using NDK r29.*
           files: release_assets/proot-android.tar.gz
           make_latest: true

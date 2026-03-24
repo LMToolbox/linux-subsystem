@@ -2,7 +2,7 @@
 
 # --- Sources ---
 # Talloc Version
-export TALLOC_VERSION="2.4.4"
+export TALLOC_VERSION="2.4.3"
 
 # Proot: Can be a branch name (master) or a specific Commit Hash
 export PROOT_REF="master"

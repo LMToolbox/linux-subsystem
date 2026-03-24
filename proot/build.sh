@@ -164,9 +164,7 @@ build_arch() {
     make -j$(nproc)
     
     mkdir -p "$STATIC_ROOT/include" "$STATIC_ROOT/lib"
-    # Talloc 2.4.4+ uses replace functions (e.g. rep_memset_s) in a separate object.
-    # Archive both talloc and replace objects to avoid undefined symbols in final link.
-    ar rcs "$STATIC_ROOT/lib/libtalloc.a" bin/default/talloc*.o bin/default/replace*.o
+    ar rcs "$STATIC_ROOT/lib/libtalloc.a" bin/default/talloc*.o
     cp -f talloc.h "$STATIC_ROOT/include"
     
     # 3. Build Proot
